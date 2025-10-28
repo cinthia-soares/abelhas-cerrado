@@ -17,7 +17,7 @@
 
 ## 📊 Ver Resultados
 
-**[🔗 Clique aqui para ver o relatório completo](outputs/analise_abelhas.html)**
+**[🔗 Clique aqui para ver o relatório completo](Outputs/analise_abelhas.html)**
 
 ## 📂 Estrutura do Repositório
 ```
@@ -93,4 +93,5 @@ Sua pasta deve estar assim:
    ├── 📁 analise/
    │   └── analise_abelhas.Rmd
    └── 📁 outputs/
+
        └── analise_abelhas.html

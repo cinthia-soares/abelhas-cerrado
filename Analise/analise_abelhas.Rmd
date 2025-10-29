@@ -1,7 +1,7 @@
 ---
 title: "Composição/diversidade de comunidades de abelhas em função da estrutura da paisagem"
 subtitle: "Estrutura da Paisagem (proporção de habitat natural x heterogeneidade) e Composição de Espécies"
-author: "Cinthia Soares Noves"
+author: "Cinthia Soares Novaes"
 date: "`r format(Sys.Date(), '%d de %B de %Y')`"
 output:
   html_document:
@@ -40,6 +40,8 @@ knitr::opts_chunk$set(
 
 **Delineamento amostral:**
 - **6 locais** com diferentes contextos (3 bordas urbanas + 3 zonas rurais)
+- **Locais urbanos: TM, IF e MARM**
+- **Locais rurais: CUR, SG e MV** 
 - **9 pontos** por local
 - **Total: 54 pontos amostrais**
 
@@ -706,7 +708,7 @@ sessionInfo()
 
 **Repositório GitHub:** [Adicione o link aqui quando criar]
 
-**Contato:** seu.email@exemplo.com
+**Contato:** cinthia.soares@ufvjm.edu.br
 
 ---
 

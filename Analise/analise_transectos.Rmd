@@ -1,0 +1,1119 @@
+---
+title: "Composição/diversidade de comunidades de abelhas - Análise por Transectos"
+subtitle: "Unidade Amostral: Transectos (18 unidades) | 6 Locais × 3 Transectos"
+author: "Cinthia Soares Novaes"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7,
+  fig.align = 'center'
+)
+```
+
+# Introdução {.tabset}
+
+## Contexto
+
+**⚠️ IMPORTANTE:** Esta análise utiliza **TRANSECTOS** como unidade amostral (n=18), não pontos individuais (n=54), para evitar pseudorreplicação.
+
+**Estrutura hierárquica dos dados:**
+```
+6 Locais (IF, TM, MARM, SG, MV, CUR)
+  └─ 3 Transectos por local (URB, TRAN, NAT)
+      └─ 3 Pontos por transecto (agregados)
+```
+
+**Pergunta:** Como a composição e a diversidade de abelhas respondem à estrutura da paisagem, considerando a proporção de habitat natural e a heterogeneidade de usos e coberturas do solo?
+
+**H1:** A diversidade e a composição de abelhas estão mais fortemente associadas à proporção de habitat natural, de modo que áreas com maior cobertura natural apresentam maior diversidade de espécies.
+
+**H2:** Mosaicos de diferentes classes de uso e cobertura do solo oferecem recursos complementares que sustentam maior diversidade e mantêm comunidades distintas, tornando a heterogeneidade da paisagem um preditor mais importante.
+
+**H0:** Não há associação significativa entre a proporção de habitat natural e a heterogeneidade da paisagem e os padrões de diversidade e composição de abelhas neste estudo.
+
+## Delineamento Amostral
+
+- **6 locais** com diferentes contextos
+  - **Urbanos:** TM, IF, MARM (bordas urbanas)
+  - **Rurais:** CUR, SG, MV (zonas rurais)
+- **3 transectos** por local (URB, TRAN, NAT)
+- **3 pontos** por transecto (agregados para esta análise)
+- **Total: 18 transectos** (unidades amostrais independentes)
+
+## Métodos Estatísticos
+
+- **GLMM (Modelo Misto)**: Riqueza por transecto (n=18) com Local como efeito aleatório
+- **NMDS**: Ordenação da composição de espécies por transecto
+- **PERMANOVA**: Teste de efeito de variáveis ambientais (bloqueada por Local)
+- **ANOSIM**: Diferenças entre grupos (contextos, locais e gradiente URB-TRAN-NAT)
+- **IndVal e SIMPER**: Espécies indicadoras e contribuintes
+
+---
+
+# Configuração Inicial
+
+## Carregar Pacotes
+
+```{r pacotes}
+library(tidyverse)
+library(readxl)
+library(vegan)
+library(lme4)
+library(lmerTest)  # Para p-valores em modelos mistos
+library(MuMIn)
+library(indicspecies)
+library(ggplot2)
+library(viridis)
+library(gridExtra)
+library(car)
+library(scales)
+```
+
+## Importar e Preparar Dados
+
+```{r importar-dados}
+# Importar dados
+# Forçando tipos de coluna para evitar erros de leitura
+dados <- read_excel("../dados/Cap2.xlsx", 
+                    sheet = "Doc_Cinthia",
+                    col_types = "text",  # Ler tudo como texto primeiro
+                    .name_repair = "minimal")
+
+# Limpeza inicial
+dados <- dados %>%
+  filter(
+    Especie != "Vespa",
+    Especie != "NA",
+    !is.na(Especie),
+    Especie != "Crabronidae sp.",
+    Especie != "Xylocopa grisescens"
+  ) %>%
+  mutate(
+    Especie = str_trim(Especie),
+    # Converter colunas numéricas
+    Area_Natural = as.numeric(Area_Natural),
+    Area_Urbana = as.numeric(Area_Urbana),
+    Pastagem = as.numeric(Pastagem),
+    Mosaico_Usos = as.numeric(Mosaico_Usos),
+    Areas_nao_veg. = as.numeric(Areas_nao_veg.),
+    Mineracao = as.numeric(Mineracao),
+    Lagos = as.numeric(Lagos),
+    Lavouras_Temp. = as.numeric(Lavouras_Temp.),
+    # Calcular total da paisagem
+    total_paisagem = Area_Natural + Area_Urbana + Pastagem + Mosaico_Usos +
+      Areas_nao_veg. + Mineracao + Lagos + Lavouras_Temp.,
+    contexto = case_when(
+      Local %in% c("TM_", "IF_", "MARM_") ~ "Borda_Urbana",
+      Local %in% c("SG_", "MV_", "CUR_") ~ "Zona_Rural",
+      TRUE ~ NA_character_
+    )
+  )
+
+cat("📊 DADOS BRUTOS:\n")
+cat("  - Total de registros:", nrow(dados), "\n")
+cat("  - Número de espécies:", n_distinct(dados$Especie), "\n")
+cat("  - Locais:", n_distinct(dados$Local), "\n")
+cat("  - Pontos individuais:", n_distinct(dados$Ponto), "\n")
+```
+
+## Agregar por Transecto
+
+```{r agregar-transectos}
+# Criar identificador de transecto único
+dados <- dados %>%
+  mutate(
+    # Extrair tipo de transecto do nome do ponto
+    tipo_transecto = case_when(
+      str_detect(Ponto, "URB") ~ "URB",
+      str_detect(Ponto, "TRAN") ~ "TRAN",
+      str_detect(Ponto, "NAT") ~ "NAT",
+      TRUE ~ NA_character_
+    ),
+    # ID único do transecto (ex: "IF_URB", "TM_TRAN")
+    ID_transecto = paste0(str_remove(Local, "_$"), "_", tipo_transecto)
+  )
+
+# Verificar se todos os pontos foram classificados
+cat("\n🔍 Verificação da classificação de transectos:\n")
+cat("  - Pontos com transecto identificado:", 
+    sum(!is.na(dados$tipo_transecto)), "/", nrow(dados), "\n")
+cat("  - Transectos únicos:", n_distinct(dados$ID_transecto, na.rm = TRUE), "\n\n")
+
+# Mostrar distribuição
+cat("Distribuição por tipo de transecto:\n")
+print(table(dados$tipo_transecto, useNA = "ifany"))
+
+cat("\nTransectos únicos identificados:\n")
+print(sort(unique(dados$ID_transecto)))
+
+# Remover registros sem transecto identificado (se houver)
+dados <- dados %>% filter(!is.na(tipo_transecto))
+
+cat("\n✅ Dados prontos para agregação por transecto\n")
+cat("   Total de registros válidos:", nrow(dados), "\n")
+```
+
+---
+
+# Diversidade Alfa (GLMM - 18 transectos)
+
+## Calcular Riqueza e Abundância por Transecto
+
+```{r riqueza-transectos}
+# Agregar dados por transecto
+riqueza_por_transecto <- dados %>%
+  group_by(ID_transecto) %>%
+  summarise(
+    Local = first(str_remove(Local, "_$")),
+    contexto = first(contexto),
+    tipo_transecto = first(tipo_transecto),
+    prop_hab_natural = first(Area_Natural) / first(total_paisagem),
+    heterogeneidade = vegan::diversity(
+      c(first(Area_Urbana), first(Pastagem), first(Mosaico_Usos),
+        first(Areas_nao_veg.), first(Mineracao), first(Lagos), 
+        first(Lavouras_Temp.)),
+      index = "shannon"
+    ),
+    riqueza = n_distinct(Especie),
+    abundancia = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Ordenar fator para gradiente urbano → natural
+    tipo_transecto = factor(tipo_transecto, levels = c("URB", "TRAN", "NAT"))
+  )
+
+cat("📊 RESUMO DA RIQUEZA POR TRANSECTO (n=18):\n\n")
+print(summary(riqueza_por_transecto))
+
+cat("\n📈 Estatísticas Descritivas:\n")
+cat("  - Riqueza média:", round(mean(riqueza_por_transecto$riqueza), 2), "±", 
+    round(sd(riqueza_por_transecto$riqueza), 2), "\n")
+cat("  - Riqueza mínima:", min(riqueza_por_transecto$riqueza), "\n")
+cat("  - Riqueza máxima:", max(riqueza_por_transecto$riqueza), "\n")
+cat("  - Abundância média:", round(mean(riqueza_por_transecto$abundancia), 2), "±", 
+    round(sd(riqueza_por_transecto$abundancia), 2), "\n")
+
+# Tabela por contexto
+cat("\n📋 Riqueza média por contexto:\n")
+riqueza_por_transecto %>%
+  group_by(contexto) %>%
+  summarise(
+    n_transectos = n(),
+    riqueza_media = round(mean(riqueza), 2),
+    riqueza_sd = round(sd(riqueza), 2),
+    .groups = "drop"
+  ) %>%
+  print()
+
+# Tabela por tipo de transecto
+cat("\n📋 Riqueza média por tipo de transecto:\n")
+riqueza_por_transecto %>%
+  group_by(tipo_transecto) %>%
+  summarise(
+    n_transectos = n(),
+    riqueza_media = round(mean(riqueza), 2),
+    riqueza_sd = round(sd(riqueza), 2),
+    .groups = "drop"
+  ) %>%
+  print()
+```
+
+## Modelos Lineares Generalizados Mistos (GLMM)
+
+### Seleção de Modelos
+
+```{r glmm-selecao}
+cat("\n=== AJUSTANDO GLMMs (n=18 transectos) ===\n")
+cat("Local incluído como efeito aleatório (1|Local) para controlar pseudorreplicação\n\n")
+
+# Modelos candidatos
+m1 <- glmer(riqueza ~ prop_hab_natural + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m2 <- glmer(riqueza ~ heterogeneidade + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m3 <- glmer(riqueza ~ prop_hab_natural + heterogeneidade + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m4 <- glmer(riqueza ~ prop_hab_natural * heterogeneidade + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m5 <- glmer(riqueza ~ tipo_transecto + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m6 <- glmer(riqueza ~ prop_hab_natural + tipo_transecto + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m7 <- glmer(riqueza ~ heterogeneidade + tipo_transecto + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m8 <- glmer(riqueza ~ (prop_hab_natural + heterogeneidade) * tipo_transecto + (1|Local), 
+            data = riqueza_por_transecto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+# Comparar modelos
+cat("Comparando modelos via AICc...\n\n")
+tabela_modelos <- model.sel(m1, m2, m3, m4, m5, m6, m7, m8)
+print(tabela_modelos)
+```
+
+### Melhor Modelo
+
+```{r glmm-melhor}
+# Extrair melhor modelo
+melhor_modelo <- get.models(tabela_modelos, subset = 1)[[1]]
+
+cat("\n📊 MELHOR MODELO (menor AICc):\n")
+cat("Fórmula:", deparse(formula(melhor_modelo)), "\n")
+cat("AICc:", round(AICc(melhor_modelo), 2), "\n")
+cat("ΔAICc:", round(tabela_modelos$delta[1], 2), "\n\n")
+
+# Mostrar coeficientes
+cat("Efeitos fixos:\n")
+print(summary(melhor_modelo)$coefficients)
+
+cat("\n\nVariância do efeito aleatório (Local):\n")
+print(VarCorr(melhor_modelo))
+
+# ICC (Intraclass Correlation Coefficient)
+var_local <- as.numeric(VarCorr(melhor_modelo)$Local[1])
+var_residual <- pi^2/3  # Para Poisson
+ICC <- var_local / (var_local + var_residual)
+cat("\nICC (Correlação Intraclasse):", round(ICC, 3), "\n")
+cat("Interpretação: ", round(ICC*100, 1), "% da variação está entre locais\n", sep="")
+
+# Testar overdispersion
+deviance_residual <- sum(residuals(melhor_modelo, type = "deviance")^2)
+df_residual <- df.residual(melhor_modelo)
+dispersion <- deviance_residual / df_residual
+
+cat("\n🔍 Teste de Overdispersion:", round(dispersion, 3), "\n")
+if(dispersion > 1.5) {
+  cat("⚠️ Overdispersion detectada (>1.5). Considere usar família Negative Binomial.\n")
+} else {
+  cat("✓ Sem problemas de overdispersion.\n")
+}
+
+# VIF (verificar colinearidade - só para modelos com 2+ preditores fixos)
+# VIF precisa de pelo menos 2 preditores (além do intercepto)
+n_fixef <- length(fixef(melhor_modelo))
+if(n_fixef > 2) {  # Mais de 2 = intercepto + pelo menos 2 preditores
+  cat("\n🔍 VIF (Colinearidade dos preditores):\n")
+  cat("VIF > 3 indica colinearidade problemática\n\n")
+  
+  # Tentar calcular VIF com proteção contra erros
+  vif_result <- tryCatch({
+    vif(melhor_modelo)
+  }, error = function(e) {
+    cat("⚠️ Não foi possível calcular VIF (modelo pode ter apenas 1 preditor)\n")
+    return(NULL)
+  })
+  
+  if(!is.null(vif_result)) {
+    print(vif_result)
+    if(any(vif_result > 3)) {
+      cat("\n⚠️ Atenção: VIF > 3 detectado para algum preditor\n")
+    } else {
+      cat("\n✓ Sem problemas de colinearidade (VIF < 3)\n")
+    }
+  }
+} else {
+  cat("\n✓ Modelo com apenas 1 preditor - VIF não necessário\n")
+}
+
+# R² marginal e condicional
+r2_values <- MuMIn::r.squaredGLMM(melhor_modelo)
+cat("\n📊 R² do modelo:\n")
+cat("  - R² marginal (efeitos fixos):", round(r2_values[1], 3), "\n")
+cat("  - R² condicional (fixos + aleatórios):", round(r2_values[2], 3), "\n")
+```
+
+### Comparação com Modelos Competidores
+
+```{r modelos-competidores}
+cat("\n=== MODELOS COMPETIDORES (ΔAICc < 2) ===\n\n")
+
+modelos_competidores <- tabela_modelos %>%
+  filter(delta < 2)
+
+if(nrow(modelos_competidores) > 1) {
+  cat("Número de modelos competidores:", nrow(modelos_competidores), "\n\n")
+  
+  # Selecionar apenas colunas que existem
+  colunas_disponiveis <- intersect(c("df", "logLik", "AICc", "delta", "weight"), 
+                                   colnames(modelos_competidores))
+  print(modelos_competidores[, colunas_disponiveis])
+  
+  cat("\n💡 Interpretação:\n")
+  cat("  - Múltiplos modelos com ΔAICc < 2 sugerem incerteza sobre o melhor modelo\n")
+  cat("  - Considere model averaging ou interpretar todos os modelos competidores\n")
+} else {
+  cat("✓ Apenas 1 modelo claramente melhor (ΔAICc > 2 para todos os outros)\n")
+}
+```
+
+---
+
+# Análises Multivariadas (18 transectos)
+
+## Preparar Matrizes de Comunidade
+
+```{r preparar-matrizes}
+# Matriz de comunidade: transectos × espécies
+matriz_comunidade_transectos <- dados %>%
+  group_by(ID_transecto, Especie) %>%
+  summarise(abundancia = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Especie, values_from = abundancia, values_fill = 0) %>%
+  column_to_rownames("ID_transecto")
+
+cat("📐 Dimensões da matriz de comunidade:\n")
+cat("   ", nrow(matriz_comunidade_transectos), " transectos × ", 
+    ncol(matriz_comunidade_transectos), " espécies\n\n", sep = "")
+
+# Verificar espécies raras
+singletons <- colSums(matriz_comunidade_transectos > 0)
+cat("Distribuição de frequência das espécies:\n")
+cat("  - Singletons (em apenas 1 transecto):", sum(singletons == 1), "\n")
+cat("  - Em 2-3 transectos:", sum(singletons >= 2 & singletons <= 3), "\n")
+cat("  - Em 4+ transectos:", sum(singletons >= 4), "\n\n")
+
+# Variáveis ambientais por transecto
+variaveis_transectos <- riqueza_por_transecto %>%
+  select(ID_transecto, Local, contexto, tipo_transecto, 
+         prop_hab_natural, heterogeneidade) %>%
+  column_to_rownames("ID_transecto")
+
+# Verificar alinhamento
+cat("✓ Alinhamento de matrizes:", 
+    all(rownames(matriz_comunidade_transectos) == rownames(variaveis_transectos)), "\n")
+```
+
+## NMDS (Ordenação)
+
+```{r nmds}
+cat("\n=== CALCULANDO NMDS ===\n")
+
+set.seed(123)
+nmds_transectos <- metaMDS(matriz_comunidade_transectos, 
+                           distance = "bray", 
+                           k = 2,
+                           trymax = 100,
+                           trace = FALSE)
+
+cat("📊 Stress do NMDS (k=2):", round(nmds_transectos$stress, 4), "\n\n")
+cat("Interpretação do Stress:\n")
+cat("  < 0.05: Excelente\n")
+cat("  0.05-0.10: Ótimo\n")
+cat("  0.10-0.20: Bom\n")
+cat("  > 0.20: Regular/Ruim\n\n")
+
+# Teste de adequação (Shepard plot)
+stressplot(nmds_transectos, main = "Shepard plot - Adequação do NMDS")
+
+# Se stress alto, tentar k=3
+if(nmds_transectos$stress > 0.20) {
+  cat("\n⚠️ Stress alto! Tentando k=3...\n")
+  nmds_transectos_3d <- metaMDS(matriz_comunidade_transectos, 
+                                distance = "bray", 
+                                k = 3,
+                                trymax = 100,
+                                trace = FALSE)
+  cat("✓ Novo stress (k=3):", round(nmds_transectos_3d$stress, 4), "\n")
+  
+  if(nmds_transectos_3d$stress < nmds_transectos$stress) {
+    cat("  → k=3 tem melhor ajuste. Considere usar esse modelo.\n")
+  }
+}
+```
+
+## PERMANOVA
+
+```{r permanova}
+cat("\n\n=== PERMANOVA (n=18 transectos) ===\n")
+
+# Modelo 1: Variáveis contínuas
+perm1 <- adonis2(matriz_comunidade_transectos ~ prop_hab_natural + heterogeneidade,
+                 data = variaveis_transectos,
+                 permutations = 999,
+                 method = "bray")
+
+# Modelo 2: + Contexto
+perm2 <- adonis2(matriz_comunidade_transectos ~ prop_hab_natural + heterogeneidade + contexto,
+                 data = variaveis_transectos,
+                 permutations = 999,
+                 method = "bray")
+
+# Modelo 3: + Tipo de transecto
+perm3 <- adonis2(matriz_comunidade_transectos ~ prop_hab_natural + heterogeneidade + tipo_transecto,
+                 data = variaveis_transectos,
+                 permutations = 999,
+                 method = "bray")
+
+# Modelo 4: Gradiente URB→TRAN→NAT
+perm4 <- adonis2(matriz_comunidade_transectos ~ tipo_transecto,
+                 data = variaveis_transectos,
+                 permutations = 999,
+                 method = "bray")
+
+# Modelo 5: BLOQUEADA por Local (controla pseudorreplicação) ⭐
+perm_blocked <- adonis2(matriz_comunidade_transectos ~ prop_hab_natural + heterogeneidade,
+                        data = variaveis_transectos,
+                        permutations = 999,
+                        method = "bray",
+                        strata = variaveis_transectos$Local)
+
+# Modelo 6: Gradiente bloqueado por Local
+perm_gradiente_blocked <- adonis2(matriz_comunidade_transectos ~ tipo_transecto,
+                                  data = variaveis_transectos,
+                                  permutations = 999,
+                                  method = "bray",
+                                  strata = variaveis_transectos$Local)
+
+cat("\n--- MODELO 1: Habitat + Heterogeneidade ---\n")
+print(perm1)
+
+cat("\n--- MODELO 2: + Contexto ---\n")
+print(perm2)
+
+cat("\n--- MODELO 3: + Tipo de Transecto ---\n")
+print(perm3)
+
+cat("\n--- MODELO 4: Apenas Gradiente URB→TRAN→NAT ---\n")
+print(perm4)
+
+cat("\n--- MODELO 5: Habitat + Heterog. BLOQUEADO (Local) ⭐ ---\n")
+print(perm_blocked)
+
+cat("\n--- MODELO 6: Gradiente BLOQUEADO (Local) ⭐ ---\n")
+print(perm_gradiente_blocked)
+
+cat("\n\n💡 INTERPRETAÇÃO:\n")
+cat("  - Modelos bloqueados controlam a não-independência dos 3 transectos dentro de cada local\n")
+cat("  - R² indica % da variação na composição explicada pelas variáveis\n")
+cat("  - p < 0.05 indica efeito significativo\n")
+```
+
+## ANOSIM
+
+```{r anosim}
+cat("\n\n=== ANOSIM ===\n")
+
+# Calcular matriz de distância
+dist_bray <- vegdist(matriz_comunidade_transectos, method = "bray")
+
+# 1. Por CONTEXTO
+anosim_contexto <- anosim(dist_bray, variaveis_transectos$contexto, permutations = 999)
+
+# 2. Por LOCAL
+anosim_local <- anosim(dist_bray, variaveis_transectos$Local, permutations = 999)
+
+# 3. Por TIPO DE TRANSECTO (URB, TRAN, NAT)
+anosim_transecto <- anosim(dist_bray, variaveis_transectos$tipo_transecto, permutations = 999)
+
+cat("--- ANOSIM: Borda Urbana vs Zona Rural ---\n")
+print(summary(anosim_contexto))
+
+cat("\n--- ANOSIM: Entre os 6 Locais ---\n")
+print(summary(anosim_local))
+
+cat("\n--- ANOSIM: Gradiente URB → TRAN → NAT ---\n")
+print(summary(anosim_transecto))
+
+cat("\n\n💡 INTERPRETAÇÃO do R statistic:\n")
+cat("  R = 0: Grupos indistinguíveis\n")
+cat("  R < 0.25: Diferença fraca\n")
+cat("  0.25 < R < 0.5: Diferença moderada\n")
+cat("  R > 0.5: Diferença forte\n")
+cat("  R = 1: Grupos completamente distintos\n")
+```
+
+### ANOSIM Pairwise (Gradiente)
+
+```{r anosim-pairwise-transecto}
+cat("\n--- ANOSIM Pairwise: Gradiente URB vs TRAN vs NAT ---\n\n")
+
+pairwise_gradiente <- data.frame(
+  Comparacao = character(),
+  R_statistic = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+tipos <- c("URB", "TRAN", "NAT")
+for(i in 1:(length(tipos)-1)) {
+  for(j in (i+1):length(tipos)) {
+    tipo_A <- tipos[i]
+    tipo_B <- tipos[j]
+    
+    indices <- variaveis_transectos$tipo_transecto %in% c(tipo_A, tipo_B)
+    dist_sub <- as.dist(as.matrix(dist_bray)[indices, indices])
+    grupos_sub <- variaveis_transectos$tipo_transecto[indices]
+    
+    anosim_pair <- anosim(dist_sub, grupos_sub, permutations = 999)
+    
+    pairwise_gradiente <- rbind(pairwise_gradiente, 
+                                data.frame(
+                                  Comparacao = paste(tipo_A, "vs", tipo_B),
+                                  R_statistic = anosim_pair$statistic,
+                                  p_value = anosim_pair$signif
+                                ))
+  }
+}
+
+pairwise_gradiente$p_adjusted <- p.adjust(pairwise_gradiente$p_value, method = "bonferroni")
+print(pairwise_gradiente)
+
+cat("\n💡 Isso mostra se o gradiente urbano → transição → natural é linear\n")
+```
+
+### ANOSIM Pairwise (Locais)
+
+```{r anosim-pairwise-local}
+cat("\n--- ANOSIM Pairwise: Entre os 6 Locais ---\n\n")
+
+locais_unicos <- unique(variaveis_transectos$Local)
+n_locais <- length(locais_unicos)
+
+pairwise_locais <- data.frame(
+  Comparacao = character(),
+  R_statistic = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for(i in 1:(n_locais-1)) {
+  for(j in (i+1):n_locais) {
+    local_A <- locais_unicos[i]
+    local_B <- locais_unicos[j]
+    
+    indices <- variaveis_transectos$Local %in% c(local_A, local_B)
+    dist_sub <- as.dist(as.matrix(dist_bray)[indices, indices])
+    grupos_sub <- variaveis_transectos$Local[indices]
+    
+    anosim_pair <- anosim(dist_sub, grupos_sub, permutations = 999)
+    
+    pairwise_locais <- rbind(pairwise_locais, 
+                             data.frame(
+                               Comparacao = paste(local_A, "vs", local_B),
+                               R_statistic = anosim_pair$statistic,
+                               p_value = anosim_pair$signif
+                             ))
+  }
+}
+
+pairwise_locais$p_adjusted <- p.adjust(pairwise_locais$p_value, method = "bonferroni")
+pairwise_locais <- pairwise_locais %>% arrange(desc(R_statistic))
+print(pairwise_locais)
+```
+
+## ENVFIT (Vetores Ambientais)
+
+```{r envfit}
+cat("\n\n=== ENVFIT: Vetores Ambientais ===\n")
+
+envfit_resultado <- envfit(nmds_transectos, 
+                           variaveis_transectos[, c("prop_hab_natural", "heterogeneidade")],
+                           permutations = 999)
+print(envfit_resultado)
+
+cat("\n💡 ENVFIT mostra a correlação das variáveis ambientais com a ordenação\n")
+cat("   r² = força da correlação | p = significância estatística\n")
+```
+
+## Espécies Indicadoras
+
+```{r especies-indicadoras}
+cat("\n\n=== ESPÉCIES INDICADORAS ===\n")
+
+# IndVal por contexto
+indval_contexto <- multipatt(matriz_comunidade_transectos, 
+                             variaveis_transectos$contexto,
+                             control = how(nperm = 999))
+
+cat("--- IndVal: Borda Urbana vs Zona Rural ---\n")
+cat("(Mostrando apenas espécies significativas)\n\n")
+summary_indval <- summary(indval_contexto, indvalcomp = TRUE)
+print(summary_indval)
+
+# IndVal por tipo de transecto (gradiente)
+indval_transecto <- multipatt(matriz_comunidade_transectos, 
+                              variaveis_transectos$tipo_transecto,
+                              control = how(nperm = 999))
+
+cat("\n--- IndVal: Gradiente URB → TRAN → NAT ---\n")
+cat("(Mostrando apenas espécies significativas)\n\n")
+summary_transecto <- summary(indval_transecto, indvalcomp = TRUE)
+print(summary_transecto)
+
+# SIMPER
+simper_contexto <- simper(matriz_comunidade_transectos, variaveis_transectos$contexto)
+cat("\n--- SIMPER: Top 10 espécies que diferenciam Borda Urbana vs Zona Rural ---\n\n")
+simper_summary <- summary(simper_contexto, ordered = TRUE)
+if(length(simper_summary) > 0) {
+  print(simper_summary[[1]][1:min(10, nrow(simper_summary[[1]])), ])
+}
+
+simper_transecto <- simper(matriz_comunidade_transectos, variaveis_transectos$tipo_transecto)
+cat("\n--- SIMPER: Top espécies por gradiente URB-TRAN-NAT ---\n")
+cat("(Mostrando comparação URB vs NAT)\n\n")
+simper_trans_summary <- summary(simper_transecto, ordered = TRUE)
+# Mostrar URB vs NAT se existir
+comparacoes <- names(simper_trans_summary)
+urb_nat <- grep("URB_NAT|NAT_URB", comparacoes, value = TRUE)
+if(length(urb_nat) > 0) {
+  print(simper_trans_summary[[urb_nat[1]]][1:min(10, nrow(simper_trans_summary[[urb_nat[1]]])), ])
+}
+```
+
+---
+
+# Visualizações
+
+## Preparar Dados para Gráficos
+
+```{r preparar-graficos}
+nmds_scores <- as.data.frame(scores(nmds_transectos, display = "sites"))
+nmds_scores$ID_transecto <- rownames(nmds_scores)
+nmds_scores <- nmds_scores %>%
+  left_join(variaveis_transectos %>% rownames_to_column("ID_transecto"), 
+            by = "ID_transecto")
+```
+
+## Figura 1: NMDS por Contexto
+
+```{r fig-nmds-contexto, fig.cap="Figura 1: Composição de abelhas - Borda Urbana vs Zona Rural (n=18 transectos)", fig.width=10, fig.height=8}
+hull_contexto <- nmds_scores %>%
+  group_by(contexto) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hull_contexto, 
+               aes(x = NMDS1, y = NMDS2, fill = contexto, group = contexto),
+               alpha = 0.3) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = contexto, shape = contexto),
+             size = 5, alpha = 0.8) +
+  geom_text(data = nmds_scores,
+            aes(x = NMDS1, y = NMDS2, label = tipo_transecto),
+            size = 3, fontface = "bold", color = "black",
+            nudge_y = 0.03) +
+  scale_fill_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                    name = "Contexto") +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                     name = "Contexto") +
+  scale_shape_manual(values = c(16, 17), name = "Contexto") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Composição de abelhas: Borda Urbana vs Zona Rural\n(Stress = ", 
+                   round(nmds_transectos$stress, 3), ")"),
+    subtitle = paste0("ANOSIM R = ", round(anosim_contexto$statistic, 3), 
+                      ", p = ", anosim_contexto$signif,
+                      " | n = 18 transectos"),
+    caption = "Rótulos indicam tipo de transecto (URB/TRAN/NAT)"
+  )
+```
+
+## Figura 2: NMDS por Tipo de Transecto
+
+```{r fig-nmds-gradiente, fig.cap="Figura 2: Gradiente urbano-natural (URB → TRAN → NAT)", fig.width=11, fig.height=8}
+hull_transecto <- nmds_scores %>%
+  group_by(tipo_transecto) %>%
+  slice(chull(NMDS1, NMDS2))
+
+cores_gradiente <- c("URB" = "#E74C3C", "TRAN" = "#F39C12", "NAT" = "#27AE60")
+
+ggplot() +
+  geom_polygon(data = hull_transecto, 
+               aes(x = NMDS1, y = NMDS2, fill = tipo_transecto, group = tipo_transecto),
+               alpha = 0.3) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = tipo_transecto, shape = tipo_transecto),
+             size = 5, alpha = 0.8) +
+  scale_fill_manual(values = cores_gradiente, name = "Tipo de Transecto") +
+  scale_color_manual(values = cores_gradiente, name = "Tipo de Transecto") +
+  scale_shape_manual(values = c(15, 16, 17), name = "Tipo de Transecto") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Gradiente Urbano → Natural (Stress = ", round(nmds_transectos$stress, 3), ")"),
+    subtitle = paste0("ANOSIM R = ", round(anosim_transecto$statistic, 3), 
+                      ", p = ", anosim_transecto$signif,
+                      " | n = 18 transectos")
+  )
+```
+
+## Figura 3: NMDS por Local
+
+```{r fig-nmds-local, fig.cap="Figura 3: Composição por local de amostragem", fig.width=11, fig.height=8}
+hull_local <- nmds_scores %>%
+  group_by(Local) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hull_local, 
+               aes(x = NMDS1, y = NMDS2, fill = Local, group = Local),
+               alpha = 0.25) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = Local, shape = tipo_transecto),
+             size = 4, alpha = 0.8) +
+  scale_fill_viridis_d(option = "turbo") +
+  scale_color_viridis_d(option = "turbo") +
+  scale_shape_manual(values = c(15, 16, 17), 
+                     name = "Tipo", 
+                     labels = c("Urbano", "Transição", "Natural")) +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Composição por Local (Stress = ", round(nmds_transectos$stress, 3), ")"),
+    subtitle = paste0("ANOSIM R = ", round(anosim_local$statistic, 3), 
+                      ", p = ", anosim_local$signif,
+                      " | 6 locais × 3 transectos")
+  )
+```
+
+## Figura 4: Gradiente de Habitat Natural
+
+```{r fig-gradiente, fig.cap="Figura 4: Gradiente de proporção de habitat natural", fig.width=10, fig.height=8}
+ggplot(nmds_scores, aes(x = NMDS1, y = NMDS2, color = prop_hab_natural, 
+                        shape = tipo_transecto)) +
+  geom_point(size = 5, alpha = 0.8) +
+  scale_color_viridis_c(name = "Proporção\nHabitat Natural", 
+                        option = "plasma",
+                        labels = scales::percent_format()) +
+  scale_shape_manual(values = c(15, 16, 17), name = "Tipo de\nTransecto") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Gradiente de Habitat Natural (Stress = ", 
+                   round(nmds_transectos$stress, 3), ")"),
+    subtitle = "n = 18 transectos"
+  )
+```
+
+## Figura 5: Vetores Ambientais (ENVFIT)
+
+```{r fig-envfit, fig.cap="Figura 5: Vetores ambientais correlacionados com a ordenação", fig.width=10, fig.height=8}
+envfit_coords <- as.data.frame(scores(envfit_resultado, "vectors")) * 0.6
+
+ggplot() +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = contexto, shape = tipo_transecto),
+             size = 4, alpha = 0.7) +
+  geom_segment(data = envfit_coords,
+               aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               color = "black", size = 1.2) +
+  geom_text(data = envfit_coords,
+            aes(x = NMDS1 * 1.15, y = NMDS2 * 1.15, label = rownames(envfit_coords)),
+            size = 5, fontface = "bold") +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                     name = "Contexto") +
+  scale_shape_manual(values = c(15, 16, 17), name = "Tipo de\nTransecto") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", 
+    y = "NMDS2", 
+    title = "Vetores Ambientais (ENVFIT)",
+    subtitle = paste0("prop_hab_natural: r²=", round(envfit_resultado$vectors$r[1], 3), 
+                      ", p=", round(envfit_resultado$vectors$pvals[1], 3), 
+                      " | heterogeneidade: r²=", round(envfit_resultado$vectors$r[2], 3),
+                      ", p=", round(envfit_resultado$vectors$pvals[2], 3))
+  )
+```
+
+## Figura 6: ANOSIM Pairwise (Locais)
+
+```{r fig-anosim-locais, fig.width=10, fig.height=12, fig.cap="Figura 6: Diferenciação entre locais (ANOSIM pairwise)"}
+ggplot(pairwise_locais, 
+       aes(x = reorder(Comparacao, R_statistic), y = R_statistic,
+           fill = p_adjusted < 0.05)) +
+  geom_col() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red", size = 1) +
+  geom_hline(yintercept = 0.25, linetype = "dotted", color = "orange", size = 0.8) +
+  scale_fill_manual(
+    values = c("TRUE" = "#27AE60", "FALSE" = "gray70"),
+    labels = c("Significativo", "Não significativo"),
+    name = "p-valor ajustado"
+  ) +
+  coord_flip() +
+  theme_bw(base_size = 12) +
+  labs(
+    x = "Comparação entre Locais",
+    y = "ANOSIM R statistic",
+    title = "Diferenciação Par-a-Par entre Locais",
+    subtitle = "Linha tracejada: R=0.5 (forte) | Linha pontilhada: R=0.25 (moderado)",
+    caption = "p-valores ajustados por Bonferroni"
+  )
+```
+
+## Figura 7: Riqueza vs Habitat Natural
+
+```{r fig-riqueza-habitat, fig.cap="Figura 7: Relação entre riqueza e habitat natural por tipo de transecto", fig.width=11, fig.height=8}
+ggplot(riqueza_por_transecto, 
+       aes(x = prop_hab_natural, y = riqueza, color = tipo_transecto, shape = tipo_transecto)) +
+  geom_point(size = 4, alpha = 0.7) +
+  geom_smooth(method = "glm", method.args = list(family = "poisson"), 
+              se = TRUE, linewidth = 1.2, alpha = 0.2) +
+  scale_color_manual(values = cores_gradiente, name = "Tipo de Transecto") +
+  scale_shape_manual(values = c(15, 16, 17), name = "Tipo de Transecto") +
+  scale_x_continuous(labels = scales::percent_format()) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Proporção de Habitat Natural",
+    y = "Riqueza de Espécies",
+    title = "Relação entre Habitat Natural e Riqueza de Abelhas",
+    subtitle = "Linhas = predições do GLM Poisson por tipo de transecto | n = 18 transectos"
+  )
+```
+
+## Figura 8: Riqueza por Contexto e Tipo de Transecto
+
+```{r fig-boxplot-riqueza, fig.cap="Figura 8: Distribuição da riqueza por contexto e tipo de transecto", fig.width=11, fig.height=8}
+ggplot(riqueza_por_transecto, 
+       aes(x = tipo_transecto, y = riqueza, fill = contexto)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.6, size = 3) +
+  scale_fill_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                    name = "Contexto") +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid.major.x = element_blank()
+  ) +
+  labs(
+    x = "Tipo de Transecto",
+    y = "Riqueza de Espécies",
+    title = "Distribuição da Riqueza ao longo do Gradiente Urbano-Natural",
+    subtitle = "n = 18 transectos (9 urbanos + 9 rurais)"
+  )
+```
+
+## Figura 9: Heterogeneidade vs Riqueza
+
+```{r fig-riqueza-hetero, fig.cap="Figura 9: Relação entre heterogeneidade da paisagem e riqueza", fig.width=10, fig.height=8}
+ggplot(riqueza_por_transecto, 
+       aes(x = heterogeneidade, y = riqueza, color = contexto, shape = tipo_transecto)) +
+  geom_point(size = 4, alpha = 0.7) +
+  geom_smooth(method = "glm", method.args = list(family = "poisson"),
+              aes(group = contexto), se = TRUE, linewidth = 1.2, alpha = 0.2) +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                     name = "Contexto") +
+  scale_shape_manual(values = c(15, 16, 17), name = "Tipo de\nTransecto") +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Heterogeneidade da Paisagem (Índice de Shannon)",
+    y = "Riqueza de Espécies",
+    title = "Relação entre Heterogeneidade e Riqueza de Abelhas",
+    subtitle = "n = 18 transectos"
+  )
+```
+
+---
+
+# Tabela Resumo
+
+```{r tabela-resumo}
+resumo_analises <- data.frame(
+  Analise = c(
+    "GLMM - Melhor modelo",
+    "PERMANOVA - Habitat + Heterog",
+    "PERMANOVA - + Tipo Transecto",
+    "PERMANOVA - Gradiente URB-TRAN-NAT",
+    "PERMANOVA - Habitat BLOQUEADA",
+    "PERMANOVA - Gradiente BLOQUEADA",
+    "ANOSIM - Borda vs Rural",
+    "ANOSIM - Entre Locais",
+    "ANOSIM - Gradiente URB-TRAN-NAT",
+    "ENVFIT - Habitat Natural",
+    "ENVFIT - Heterogeneidade"
+  ),
+  Estatistica = c(
+    paste0("AICc = ", round(AICc(melhor_modelo), 1)),
+    paste0("R² = ", round(perm1$R2[1], 3)),
+    paste0("R² = ", round(perm3$R2[1], 3)),
+    paste0("R² = ", round(perm4$R2[1], 3)),
+    paste0("R² = ", round(perm_blocked$R2[1], 3)),
+    paste0("R² = ", round(perm_gradiente_blocked$R2[1], 3)),
+    paste0("R = ", round(anosim_contexto$statistic, 3)),
+    paste0("R = ", round(anosim_local$statistic, 3)),
+    paste0("R = ", round(anosim_transecto$statistic, 3)),
+    paste0("r² = ", round(envfit_resultado$vectors$r[1], 3)),
+    paste0("r² = ", round(envfit_resultado$vectors$r[2], 3))
+  ),
+  p_value = c(
+    "—",
+    round(perm1$`Pr(>F)`[1], 4),
+    round(perm3$`Pr(>F)`[1], 4),
+    round(perm4$`Pr(>F)`[1], 4),
+    round(perm_blocked$`Pr(>F)`[1], 4),
+    round(perm_gradiente_blocked$`Pr(>F)`[1], 4),
+    round(anosim_contexto$signif, 4),
+    round(anosim_local$signif, 4),
+    round(anosim_transecto$signif, 4),
+    round(envfit_resultado$vectors$pvals[1], 4),
+    round(envfit_resultado$vectors$pvals[2], 4)
+  ),
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(resumo_analises, 
+             caption = "Tabela 1: Resumo das análises estatísticas (n=18 transectos)",
+             align = c("l", "c", "c"))
+```
+
+---
+
+# Conclusões
+
+## Principais Resultados
+
+### ✅ Vantagens da Análise por Transectos (n=18)
+
+1. **Evita pseudorreplicação**: Os 3 pontos dentro de cada transecto são tratados como uma única unidade amostral
+2. **Estatisticamente mais correto**: Respeita a estrutura hierárquica dos dados
+3. **Biologicamente interpretável**: Transectos representam gradientes reais (URB → TRAN → NAT)
+4. **Controle adequado**: Efeito aleatório (1|Local) controla variação entre os 6 locais
+
+### 📊 Resumo das Análises
+
+#### 1. Diversidade Alfa (GLMM)
+- **n = 18 transectos** (não 54 pontos)
+- Melhor modelo selecionado via AICc
+- Efeito aleatório de Local controla não-independência
+- R² marginal = efeito apenas das variáveis ambientais
+- R² condicional = variáveis + estrutura hierárquica
+
+#### 2. Composição Beta
+- **NMDS** (stress = `r round(nmds_transectos$stress, 3)`): Qualidade da ordenação
+- **PERMANOVA bloqueada**: Controla pseudorreplicação dos 3 transectos por local
+- **ANOSIM**:
+  - Contexto (Urbano vs Rural): R = `r round(anosim_contexto$statistic, 3)`
+  - Gradiente (URB-TRAN-NAT): R = `r round(anosim_transecto$statistic, 3)`
+  - Entre locais: R = `r round(anosim_local$statistic, 3)`
+
+#### 3. Espécies Indicadoras
+- **IndVal**: Espécies características de cada contexto/gradiente
+- **SIMPER**: Espécies que mais contribuem para diferenças entre grupos
+
+### 🔬 Interpretação Biológica
+
+**Gradiente URB → TRAN → NAT:** 
+- Representa um gradiente real de urbanização
+- ANOSIM pairwise mostra se as diferenças são graduais ou abruptas
+- Importante para entender zonas de transição
+
+**Contexto (Urbano vs Rural):**
+- Diferenças em escala de paisagem
+- Relevante para conservação e manejo
+
+### 📈 Figuras Geradas
+
+1. ✅ NMDS por contexto (Urbano vs Rural)
+2. ✅ NMDS por gradiente (URB-TRAN-NAT)
+3. ✅ NMDS por local (6 locais × 3 transectos)
+4. ✅ Gradiente de habitat natural
+5. ✅ Vetores ambientais (ENVFIT)
+6. ✅ ANOSIM pairwise entre locais
+7. ✅ Riqueza vs habitat natural
+8. ✅ Boxplot: Riqueza por contexto e transecto
+9. ✅ Riqueza vs heterogeneidade
+
+## Comparação: 54 Pontos vs 18 Transectos
+
+| Aspecto | 54 Pontos (❌) | 18 Transectos (✅) |
+|---------|----------------|-------------------|
+| **n real** | Inflado | Correto |
+| **Pseudorreplicação** | Presente | Controlada |
+| **Interpretação** | Difícil | Clara |
+| **Poder estatístico** | Falso | Real |
+| **Publicável** | Questionável | Adequado |
+
+## Próximos Passos Sugeridos
+
+1. 🔍 **Verificar pressupostos** dos modelos GLMM
+2. 📊 **Explorar interações** entre variáveis (se biologicamente plausível)
+3. 🐝 **Analisar grupos funcionais** (tamanho, sociabilidade, etc.)
+4. 📝 **Preparar manuscrito** usando esta abordagem estatística correta
+
+---
+
+# Informações da Sessão
+
+```{r sessao}
+sessionInfo()
+```
+
+---
+
+<div style="text-align: center; margin-top: 50px; padding: 20px; background-color: #f0f0f0; border-radius: 10px;">
+**Análise realizada em:** `r format(Sys.Date(), '%d/%m/%Y')`
+
+**Unidade amostral:** 18 transectos (6 locais × 3 transectos)
+
+**Contato:** cinthia.soares@ufvjm.edu.br
+
+---
+
+*Documento gerado com R Markdown*
+
+**⚠️ IMPORTANTE:** Esta análise usa a estrutura hierárquica correta dos dados, evitando pseudorreplicação através da agregação por transectos e uso de modelos mistos.
+</div>

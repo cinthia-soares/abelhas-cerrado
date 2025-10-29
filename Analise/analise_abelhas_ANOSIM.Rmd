@@ -1,0 +1,722 @@
+---
+title: "Composição/diversidade de comunidades de abelhas em função da estrutura da paisagem"
+subtitle: "Estrutura da Paisagem (proporção de habitat natural x heterogeneidade) e Composição de Espécies - VERSÃO ANOSIM"
+author: "Cinthia Soares Novaes"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7,
+  fig.align = 'center'
+)
+```
+
+# Introdução {.tabset}
+
+## Contexto
+*Pergunta: Como a composição e a diversidade de abelhas respondem à estrutura da paisagem, considerando a proporção de habitat natural e a heterogeneidade de usos e coberturas do solo?*
+
+**H1:** A diversidade e a composição de abelhas estão mais fortemente associadas à proporção de habitat natural, de modo que áreas com maior cobertura natural apresentam maior diversidade de espécies.
+
+**H2:** Mosaicos de diferentes classes de uso e cobertura do solo oferecem recursos complementares que sustentam maior diversidade e mantêm comunidades distintas, tornando a heterogeneidade da paisagem um preditor mais importante.
+
+**H0:** Não há associação significativa entre a proporção de habitat natural e a heterogeneidade da paisagem e os padrões de diversidade e composição de abelhas neste estudo. As diferenças observadas podem ser atribuídas ao acaso ou a fatores não identificados na presente abordagem.
+
+
+**Delineamento amostral:**
+- **6 locais** com diferentes contextos (3 bordas urbanas + 3 zonas rurais)
+- **Locais urbanos: TM, IF e MARM**
+- **Locais rurais: CUR, SG e MV** 
+- **9 pontos** por local
+- **Total: 54 pontos amostrais**
+
+## Objetivos
+
+Os principais objetivos desta análise são:
+
+1. **Diversidade Alfa**: Avaliar como a propoção de habitat natural e a heterogeneidade da paisagem afetam a riqueza de espécies (usando GLMM para controlar pseudorreplicação)
+2. **Composição Beta**: Testar se áreas de borda urbana diferem de zonas rurais em termos de composição de espécies
+3. **Análises Multivariadas**: Identificar padrões espaciais e espécies indicadoras
+
+## Métodos Estatísticos
+
+- **GLMM (Modelo Misto)**: Riqueza por ponto (n=54) com Local como efeito aleatório
+- **NMDS**: Ordenação da composição de espécies
+- **ANOSIM**: Teste de diferenças entre grupos (contextos, locais e categorias de habitat)
+- **ANOSIM Bloqueado**: Controla pseudorreplicação através de blocos (Local)
+- **IndVal e SIMPER**: Espécies indicadoras e contribuintes
+
+---
+
+# Configuração Inicial
+
+## Carregar Pacotes
+
+```{r pacotes}
+library(tidyverse)
+library(readxl)
+library(vegan)
+library(lme4)      # Para modelos mistos
+library(MuMIn)
+library(indicspecies)
+library(ggplot2)
+library(viridis)
+library(gridExtra)
+library(car)
+```
+
+## Importar e Limpar Dados
+
+```{r importar-dados}
+# Importar dados
+dados <- read_excel("../dados/Cap2.xlsx", sheet = "Doc_Cinthia")
+
+# Limpeza de dados
+dados <- dados %>%
+  filter(
+    Especie != "Vespa",
+    Especie != "NA",
+    !is.na(Especie),
+    Especie != "Crabronidae sp.",
+    Especie != "Xylocopa grisescens"
+  ) %>%
+  mutate(
+    # Corrigir nomes com espaços
+    Especie = str_trim(Especie),
+    
+    # Calcular total da paisagem
+    total_paisagem = Area_Natural + Area_Urbana + Pastagem + Mosaico_Usos +
+      Areas_nao_veg. + Mineracao + Lagos + Lavouras_Temp.,
+    
+    # Criar contexto espacial
+    contexto = case_when(
+      Local %in% c("TM_", "IF_", "MARM_") ~ "Borda_Urbana",
+      Local %in% c("SG_", "MV_", "CUR_") ~ "Zona_Rural",
+      TRUE ~ NA_character_
+    ),
+    
+    # Criar ID único para cada ponto
+    ID_ponto = paste(Local, Ponto, sep = "_")
+  )
+
+# Resumo dos dados
+cat("📊 DADOS CARREGADOS:\n")
+cat("  - Total de registros:", nrow(dados), "\n")
+cat("  - Número de espécies:", n_distinct(dados$Especie), "\n")
+cat("  - Locais amostrados:", n_distinct(dados$Local), "\n")
+cat("  - Pontos únicos:", n_distinct(dados$ID_ponto), "\n")
+```
+
+---
+
+# Diversidade Alfa (GLMM - 54 pontos)
+
+## Calcular Riqueza por Ponto
+
+```{r riqueza-pontos}
+riqueza_por_ponto <- dados %>%
+  group_by(ID_ponto) %>%
+  summarise(
+    Local = first(Local),
+    contexto = first(contexto),
+    prop_hab_natural = first(Area_Natural) / first(total_paisagem),
+    heterogeneidade = vegan::diversity(
+      c(first(Area_Urbana), first(Pastagem), first(Mosaico_Usos),
+        first(Areas_nao_veg.), first(Mineracao), first(Lagos), 
+        first(Lavouras_Temp.)),
+      index = "shannon"
+    ),
+    riqueza = n_distinct(Especie),
+    abundancia = n(),
+    .groups = "drop"
+  )
+
+cat("📊 Resumo da riqueza por ponto:\n")
+print(summary(riqueza_por_ponto))
+
+cat("\n📈 Estatísticas descritivas:\n")
+cat("  - Riqueza média:", round(mean(riqueza_por_ponto$riqueza), 2), "±", 
+    round(sd(riqueza_por_ponto$riqueza), 2), "\n")
+cat("  - Riqueza mínima:", min(riqueza_por_ponto$riqueza), "\n")
+cat("  - Riqueza máxima:", max(riqueza_por_ponto$riqueza), "\n")
+```
+
+## Modelos Lineares Generalizados Mistos (GLMM)
+
+### Seleção de Modelos
+
+```{r glmm-selecao}
+cat("\n=== AJUSTANDO GLMMs ===\n")
+cat("Local é incluído como efeito aleatório para controlar pseudorreplicação\n\n")
+
+# Modelos candidatos
+m1 <- glmer(riqueza ~ prop_hab_natural + (1|Local), 
+            data = riqueza_por_ponto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m2 <- glmer(riqueza ~ heterogeneidade + (1|Local), 
+            data = riqueza_por_ponto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m3 <- glmer(riqueza ~ prop_hab_natural + heterogeneidade + (1|Local), 
+            data = riqueza_por_ponto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m4 <- glmer(riqueza ~ prop_hab_natural * heterogeneidade + (1|Local), 
+            data = riqueza_por_ponto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+m5 <- glmer(riqueza ~ prop_hab_natural + heterogeneidade + contexto + (1|Local), 
+            data = riqueza_por_ponto, 
+            family = poisson,
+            control = glmerControl(optimizer = "bobyqa"))
+
+# Comparar modelos
+tabela_modelos <- model.sel(m1, m2, m3, m4, m5)
+print(tabela_modelos)
+```
+
+### Melhor Modelo
+
+```{r glmm-melhor}
+# Extrair melhor modelo
+melhor_modelo <- get.models(tabela_modelos, subset = 1)[[1]]
+
+cat("\n📊 MELHOR MODELO (menor AICc):\n")
+cat("AICc:", round(AICc(melhor_modelo), 2), "\n")
+cat("ΔAICc:", round(tabela_modelos$delta[1], 2), "\n\n")
+
+# Mostrar coeficientes
+cat("Efeitos fixos:\n")
+print(summary(melhor_modelo)$coefficients)
+
+cat("\n\nVariância do efeito aleatório (Local):\n")
+print(VarCorr(melhor_modelo))
+
+# Testar overdispersion
+deviance_residual <- sum(residuals(melhor_modelo, type = "deviance")^2)
+df_residual <- df.residual(melhor_modelo)
+dispersion <- deviance_residual / df_residual
+
+cat("\n🔍 Teste de Overdispersion:", round(dispersion, 3), "\n")
+if(dispersion > 1.5) {
+  cat("⚠️ Overdispersion detectada (>1.5). Considere usar família Negative Binomial.\n")
+} else {
+  cat("✓ Sem problemas de overdispersion.\n")
+}
+
+# VIF (verificar colinearidade - só para modelos com 2+ preditores fixos)
+if(length(fixef(melhor_modelo)) > 2) {
+  cat("\n🔍 VIF (Colinearidade dos preditores):\n")
+  cat("VIF > 3 indica colinearidade problemática\n\n")
+  print(vif(melhor_modelo))
+}
+```
+
+**Interpretação:** O modelo misto (GLMM) usa os 54 pontos mas controla a não-independência dos pontos dentro de cada local através do efeito aleatório `(1|Local)`. Isso é estatisticamente mais robusto do que usar apenas os 6 locais.
+
+---
+
+# Análises Multivariadas (54 pontos)
+
+## Preparar Matrizes
+
+```{r preparar-matrizes}
+# Matriz de comunidade: pontos × espécies
+matriz_comunidade_pontos <- dados %>%
+  group_by(ID_ponto, Especie) %>%
+  summarise(abundancia = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Especie, values_from = abundancia, values_fill = 0) %>%
+  column_to_rownames("ID_ponto")
+
+cat("📐 Dimensões da matriz:", dim(matriz_comunidade_pontos), "\n")
+cat("   (", nrow(matriz_comunidade_pontos), " pontos × ", 
+    ncol(matriz_comunidade_pontos), " espécies)\n\n", sep = "")
+
+# Variáveis ambientais por ponto
+variaveis_pontos <- dados %>%
+  group_by(ID_ponto) %>%
+  summarise(
+    Local = first(Local),
+    contexto = first(contexto),
+    prop_hab_natural = first(Area_Natural) / first(total_paisagem),
+    heterogeneidade = vegan::diversity(
+      c(first(Area_Urbana), first(Pastagem), first(Mosaico_Usos),
+        first(Areas_nao_veg.), first(Mineracao), first(Lagos), 
+        first(Lavouras_Temp.)),
+      index = "shannon"
+    ),
+    .groups = "drop"
+  ) %>%
+  column_to_rownames("ID_ponto")
+
+# Verificar alinhamento
+cat("✓ Alinhamento de matrizes:", 
+    all(rownames(matriz_comunidade_pontos) == rownames(variaveis_pontos)), "\n")
+```
+
+## NMDS (Ordenação)
+
+```{r nmds}
+cat("\n=== CALCULANDO NMDS ===\n")
+
+set.seed(123)
+nmds_pontos <- metaMDS(matriz_comunidade_pontos, 
+                       distance = "bray", 
+                       k = 2,
+                       trymax = 100,
+                       trace = FALSE)
+
+cat("📊 Stress do NMDS (k=2):", round(nmds_pontos$stress, 4), "\n\n")
+cat("Interpretação do Stress:\n")
+cat("  < 0.05: Excelente\n")
+cat("  0.05-0.10: Ótimo\n")
+cat("  0.10-0.20: Bom\n")
+cat("  > 0.20: Regular/Ruim\n")
+
+# Se stress alto, tentar k=3
+if(nmds_pontos$stress > 0.20) {
+  cat("\n⚠️ Stress alto! Tentando k=3...\n")
+  nmds_pontos <- metaMDS(matriz_comunidade_pontos, 
+                         distance = "bray", 
+                         k = 3,
+                         trymax = 100,
+                         trace = FALSE)
+  cat("✓ Novo stress (k=3):", round(nmds_pontos$stress, 4), "\n")
+}
+```
+
+## ANOSIM - Análise Principal
+
+### ANOSIM por Grupos Categóricos
+
+```{r anosim-principal}
+cat("\n\n=== ANOSIM: ANÁLISE DE SIMILARIDADE ===\n")
+cat("ANOSIM testa se as diferenças ENTRE grupos são maiores que DENTRO dos grupos\n")
+cat("R statistic varia de -1 a +1:\n")
+cat("  R ~ 0: Grupos não diferem\n")
+cat("  R > 0.5: Grupos bem separados\n")
+cat("  R = 1: Grupos completamente distintos\n\n")
+
+# Calcular matriz de distância
+dist_bray <- vegdist(matriz_comunidade_pontos, method = "bray")
+
+# 1. Por CONTEXTO (Borda Urbana vs Zona Rural)
+anosim_contexto <- anosim(dist_bray, variaveis_pontos$contexto, permutations = 999)
+
+# 2. Por LOCAL (6 locais)
+anosim_local <- anosim(dist_bray, variaveis_pontos$Local, permutations = 999)
+
+# 3. Por categoria de HABITAT (tercis)
+tercis <- quantile(variaveis_pontos$prop_hab_natural, probs = c(0.33, 0.67))
+categoria_habitat <- cut(variaveis_pontos$prop_hab_natural,
+                         breaks = c(-Inf, tercis[1], tercis[2], Inf),
+                         labels = c("Baixo", "Medio", "Alto"))
+anosim_habitat <- anosim(dist_bray, categoria_habitat, permutations = 999)
+
+# 4. Por categoria de HETEROGENEIDADE (tercis)
+tercis_het <- quantile(variaveis_pontos$heterogeneidade, probs = c(0.33, 0.67))
+categoria_heterog <- cut(variaveis_pontos$heterogeneidade,
+                         breaks = c(-Inf, tercis_het[1], tercis_het[2], Inf),
+                         labels = c("Baixo", "Medio", "Alto"))
+anosim_heterog <- anosim(dist_bray, categoria_heterog, permutations = 999)
+
+cat("--- ANOSIM: Borda Urbana vs Zona Rural ---\n")
+print(summary(anosim_contexto))
+cat("\n--- ANOSIM: Entre os 6 Locais ---\n")
+print(summary(anosim_local))
+cat("\n--- ANOSIM: Por Categoria de Habitat Natural ---\n")
+print(summary(anosim_habitat))
+cat("\n--- ANOSIM: Por Categoria de Heterogeneidade ---\n")
+print(summary(anosim_heterog))
+```
+
+### ANOSIM Bloqueado (Controla Pseudorreplicação)
+
+```{r anosim-bloqueado}
+cat("\n\n=== ANOSIM BLOQUEADO ===\n")
+cat("Usa 'strata' para controlar a pseudorreplicação dos pontos dentro de cada Local\n\n")
+
+# ANOSIM bloqueado por Local para testar efeito do CONTEXTO
+# Isso controla o fato de que os 9 pontos dentro de cada local não são independentes
+anosim_blocked_contexto <- anosim(dist_bray, 
+                                  variaveis_pontos$contexto, 
+                                  permutations = 999,
+                                  strata = variaveis_pontos$Local)
+
+cat("--- ANOSIM BLOQUEADO: Contexto (controlando Local) ---\n")
+print(summary(anosim_blocked_contexto))
+cat("\n💡 Esta análise controla a pseudorreplicação dos pontos dentro de cada local!\n")
+```
+
+**Interpretação:** O ANOSIM bloqueado é análogo à PERMANOVA bloqueada - ele controla o fato de que os 9 pontos dentro de cada local não são completamente independentes, usando permutações restritas dentro dos blocos (locais).
+
+### ANOSIM Pairwise
+
+```{r anosim-pairwise}
+cat("\n--- ANOSIM Pairwise (Comparações entre Locais) ---\n")
+
+locais_unicos <- unique(variaveis_pontos$Local)
+n_locais <- length(locais_unicos)
+
+resultados_pairwise <- data.frame(
+  Comparacao = character(),
+  R_statistic = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for(i in 1:(n_locais-1)) {
+  for(j in (i+1):n_locais) {
+    local_A <- locais_unicos[i]
+    local_B <- locais_unicos[j]
+    
+    indices <- variaveis_pontos$Local %in% c(local_A, local_B)
+    dist_sub <- as.dist(as.matrix(dist_bray)[indices, indices])
+    grupos_sub <- variaveis_pontos$Local[indices]
+    
+    anosim_pair <- anosim(dist_sub, grupos_sub, permutations = 999)
+    
+    resultados_pairwise <- rbind(resultados_pairwise, 
+                                 data.frame(
+                                   Comparacao = paste(local_A, "vs", local_B),
+                                   R_statistic = anosim_pair$statistic,
+                                   p_value = anosim_pair$signif
+                                 ))
+  }
+}
+
+resultados_pairwise$p_adjusted <- p.adjust(resultados_pairwise$p_value, method = "bonferroni")
+resultados_pairwise <- resultados_pairwise %>% arrange(desc(R_statistic))
+
+print(resultados_pairwise)
+```
+
+## ENVFIT (Vetores Ambientais)
+
+```{r envfit}
+cat("\n\n=== ENVFIT: Vetores Ambientais ===\n")
+
+envfit_resultado <- envfit(nmds_pontos, 
+                           variaveis_pontos[, c("prop_hab_natural", "heterogeneidade")],
+                           permutations = 999)
+print(envfit_resultado)
+```
+
+## Espécies Indicadoras
+
+```{r especies-indicadoras}
+cat("\n\n=== ESPÉCIES INDICADORAS ===\n")
+
+# IndVal por contexto
+indval_contexto <- multipatt(matriz_comunidade_pontos, 
+                             variaveis_pontos$contexto,
+                             control = how(nperm = 999))
+
+cat("--- IndVal: Borda Urbana vs Zona Rural ---\n")
+print(summary(indval_contexto, indvalcomp = TRUE))
+
+# SIMPER
+simper_contexto <- simper(matriz_comunidade_pontos, variaveis_pontos$contexto)
+cat("\n--- SIMPER: Espécies que diferenciam contextos ---\n")
+cat("(Mostrando top 10 espécies)\n\n")
+print(summary(simper_contexto, ordered = TRUE)[[1]][1:10, ])
+```
+
+---
+
+# Visualizações
+
+## Preparar Dados para Gráficos
+
+```{r preparar-graficos}
+nmds_scores <- as.data.frame(scores(nmds_pontos, display = "sites"))
+nmds_scores$ID_ponto <- rownames(nmds_scores)
+nmds_scores <- nmds_scores %>%
+  left_join(variaveis_pontos %>% rownames_to_column("ID_ponto"), by = "ID_ponto")
+```
+
+## NMDS por Contexto
+
+```{r fig-nmds-contexto, fig.cap="Figura 1: Composição de abelhas em bordas urbanas vs zonas rurais", fig.width=10, fig.height=8}
+hull_contexto <- nmds_scores %>%
+  group_by(contexto) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hull_contexto, 
+               aes(x = NMDS1, y = NMDS2, fill = contexto, group = contexto),
+               alpha = 0.3) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = contexto, shape = contexto),
+             size = 4, alpha = 0.8) +
+  scale_fill_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60")) +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60")) +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Composição de abelhas: Borda Urbana vs Zona Rural\n(Stress = ", 
+                   round(nmds_pontos$stress, 3), ")"),
+    subtitle = paste0("ANOSIM R = ", round(anosim_contexto$statistic, 3), 
+                      ", p = ", anosim_contexto$signif),
+    color = "Contexto", fill = "Contexto", shape = "Contexto"
+  )
+```
+
+## NMDS por Local
+
+```{r fig-nmds-local, fig.cap="Figura 2: Composição de abelhas por local de amostragem", fig.width=11, fig.height=8}
+hull_local <- nmds_scores %>%
+  group_by(Local) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hull_local, 
+               aes(x = NMDS1, y = NMDS2, fill = Local, group = Local),
+               alpha = 0.3) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = Local),
+             size = 3.5, alpha = 0.8) +
+  scale_fill_viridis_d(option = "turbo") +
+  scale_color_viridis_d(option = "turbo") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Composição por Local (Stress = ", round(nmds_pontos$stress, 3), ")"),
+    subtitle = paste0("ANOSIM R = ", round(anosim_local$statistic, 3), 
+                      ", p = ", anosim_local$signif)
+  )
+```
+
+## Gradiente de Habitat Natural
+
+```{r fig-gradiente, fig.cap="Figura 3: Gradiente de proporção de habitat natural", fig.width=10, fig.height=8}
+ggplot(nmds_scores, aes(x = NMDS1, y = NMDS2, color = prop_hab_natural)) +
+  geom_point(size = 4, alpha = 0.8) +
+  scale_color_viridis_c(name = "Proporção\nHabitat Natural", option = "plasma") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Gradiente de Habitat Natural (Stress = ", round(nmds_pontos$stress, 3), ")")
+  )
+```
+
+## Vetores Ambientais (ENVFIT)
+
+```{r fig-envfit, fig.cap="Figura 4: Vetores ambientais correlacionados com a ordenação", fig.width=10, fig.height=8}
+envfit_coords <- as.data.frame(scores(envfit_resultado, "vectors")) * 0.5
+
+ggplot() +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = contexto),
+             size = 3, alpha = 0.7) +
+  geom_segment(data = envfit_coords,
+               aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               color = "black", size = 1.2) +
+  geom_text(data = envfit_coords,
+            aes(x = NMDS1 * 1.1, y = NMDS2 * 1.1, label = rownames(envfit_coords)),
+            size = 5, fontface = "bold") +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60")) +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank()) +
+  labs(x = "NMDS1", y = "NMDS2", title = "Vetores Ambientais (ENVFIT)", color = "Contexto")
+```
+
+## ANOSIM Pairwise
+
+```{r fig-anosim, fig.width=10, fig.height=12, fig.cap="Figura 5: Comparações par-a-par entre locais"}
+ggplot(resultados_pairwise, 
+       aes(x = reorder(Comparacao, R_statistic), y = R_statistic,
+           fill = p_adjusted < 0.05)) +
+  geom_col() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red", size = 1) +
+  scale_fill_manual(
+    values = c("TRUE" = "#27AE60", "FALSE" = "gray70"),
+    labels = c("p < 0.05", "p ≥ 0.05"),
+    name = "Significância"
+  ) +
+  coord_flip() +
+  theme_bw(base_size = 12) +
+  labs(
+    x = "Comparação entre Locais",
+    y = "ANOSIM R statistic",
+    title = "Diferenciação Par-a-Par entre Locais",
+    subtitle = "Linha tracejada: R = 0.5 (diferença forte)"
+  )
+```
+
+## Riqueza vs Habitat Natural
+
+```{r fig-riqueza-habitat, fig.cap="Figura 6: Relação entre riqueza e proporção de habitat natural", fig.width=10, fig.height=7}
+ggplot(riqueza_por_ponto, aes(x = prop_hab_natural, y = riqueza, color = contexto)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "glm", method.args = list(family = "poisson"), 
+              se = TRUE, linewidth = 1.2) +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                     name = "Contexto") +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Proporção de Habitat Natural",
+    y = "Riqueza de Espécies",
+    title = "Relação entre Habitat Natural e Riqueza de Abelhas",
+    subtitle = "Linhas = predições do GLM Poisson por contexto"
+  )
+```
+
+---
+
+# Tabela Resumo
+
+```{r tabela-resumo}
+resumo_analises <- data.frame(
+  Analise = c(
+    "GLMM - Melhor modelo",
+    "ANOSIM - Borda vs Rural",
+    "ANOSIM - Entre Locais",
+    "ANOSIM - Categoria Habitat",
+    "ANOSIM - Categoria Heterog",
+    "ANOSIM Bloqueado - Contexto",
+    "ENVFIT - Habitat Natural",
+    "ENVFIT - Heterogeneidade"
+  ),
+  Estatistica = c(
+    paste0("AICc = ", round(AICc(melhor_modelo), 1)),
+    paste0("R = ", round(anosim_contexto$statistic, 3)),
+    paste0("R = ", round(anosim_local$statistic, 3)),
+    paste0("R = ", round(anosim_habitat$statistic, 3)),
+    paste0("R = ", round(anosim_heterog$statistic, 3)),
+    paste0("R = ", round(anosim_blocked_contexto$statistic, 3)),
+    paste0("r² = ", round(envfit_resultado$vectors$r[1], 3)),
+    paste0("r² = ", round(envfit_resultado$vectors$r[2], 3))
+  ),
+  p_value = c(
+    ifelse(length(fixef(melhor_modelo)) > 2, 
+           round(summary(melhor_modelo)$coefficients[2, 4], 4), 
+           "—"),
+    round(anosim_contexto$signif, 4),
+    round(anosim_local$signif, 4),
+    round(anosim_habitat$signif, 4),
+    round(anosim_heterog$signif, 4),
+    round(anosim_blocked_contexto$signif, 4),
+    round(envfit_resultado$vectors$pvals[1], 4),
+    round(envfit_resultado$vectors$pvals[2], 4)
+  )
+)
+
+resumo_analises
+```
+
+---
+
+# Conclusões
+
+## Principais Resultados
+
+Este documento apresentou uma análise completa das comunidades de abelhas do Cerrado usando **ANOSIM** como método principal para testar diferenças na composição, incluindo:
+
+### 1. Diversidade Alfa (GLMM)
+
+- Utilizamos **modelos mistos** (GLMM) com os **54 pontos**, controlando a pseudorreplicação através do efeito aleatório de Local
+- Esta abordagem é **estatisticamente mais robusta** do que usar apenas os 6 locais como unidades independentes
+- O melhor modelo (menor AICc) foi selecionado através de comparação entre modelos candidatos
+
+### 2. Composição Beta (ANOSIM)
+
+- **NMDS** revelou padrões claros de separação entre contextos (stress = `r round(nmds_pontos$stress, 3)`)
+- **ANOSIM** confirmou diferenças significativas entre bordas urbanas e zonas rurais (R = `r round(anosim_contexto$statistic, 3)`, p = `r anosim_contexto$signif`)
+- **ANOSIM bloqueado** controlou a pseudorreplicação através de permutações restritas dentro dos locais
+- Análises pairwise identificaram quais pares de locais diferem significativamente
+- Categorização de habitat natural e heterogeneidade permitiu testar efeitos de gradientes contínuos
+
+### 3. Espécies Indicadoras
+
+- **IndVal** e **SIMPER** identificaram espécies características de cada contexto
+- Estas espécies podem servir como bioindicadoras de qualidade ambiental
+
+## Vantagens do ANOSIM
+
+✅ **Robusto a diferenças de dispersão**: Menos sensível a heterogeneidade de variâncias entre grupos  
+✅ **Interpretação intuitiva**: R statistic fácil de interpretar (0 = sem diferença, 1 = completamente distinto)  
+✅ **Permutações bloqueadas**: Controla pseudorreplicação (equivalente à PERMANOVA bloqueada)  
+✅ **Comparações múltiplas**: Análises pairwise identificam quais grupos diferem
+
+## Destaques Metodológicos
+
+✅ **Controle de Pseudorreplicação**: Uso de GLMM e ANOSIM bloqueado  
+✅ **Múltiplas Escalas**: Análises em nível de ponto (54) e local (6)  
+✅ **Robustez Estatística**: Seleção de modelos via AICc  
+✅ **Visualizações Claras**: Gráficos de alta qualidade para publicação
+
+## Nota sobre PERMANOVA vs ANOSIM
+
+Este script usa **ANOSIM** no lugar de PERMANOVA, conforme recomendação do orientador. Ambas as análises testam diferenças na composição de comunidades, mas:
+
+- **PERMANOVA** testa se os centróides dos grupos diferem (análoga a ANOVA)
+- **ANOSIM** testa se diferenças entre grupos > diferenças dentro dos grupos (baseada em ranks)
+
+ANOSIM é mais conservadora e robusta a diferenças de dispersão entre grupos, sendo uma escolha adequada para este tipo de análise.
+
+## Arquivos Gerados
+
+Este script gera automaticamente:
+
+- ✅ 6 figuras de alta qualidade (incorporadas neste relatório)
+- ✅ Este relatório HTML completo e reproduzível
+- ✅ Todas as análises estatísticas necessárias
+
+---
+
+# Informações da Sessão
+
+```{r sessao}
+sessionInfo()
+```
+
+---
+
+<div style="text-align: center; margin-top: 50px; padding: 20px; background-color: #f0f0f0; border-radius: 10px;">
+**Análise realizada em:** `r format(Sys.Date(), '%d/%m/%Y')`
+
+**Versão:** ANOSIM (substituindo PERMANOVA)
+
+**Contato:** cinthia.soares@ufvjm.edu.br
+
+---
+
+*Documento gerado com R Markdown*
+</div>

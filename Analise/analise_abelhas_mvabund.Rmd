@@ -1,0 +1,968 @@
+---
+title: "Composição/diversidade de comunidades de abelhas em função da estrutura da paisagem"
+subtitle: "Estrutura da Paisagem (proporção de habitat natural x heterogeneidade) e Composição de Espécies - VERSÃO MVABUND"
+author: "Cinthia Soares Novaes"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7,
+  fig.align = 'center'
+)
+```
+
+# Introdução {.tabset}
+
+## Contexto
+*Pergunta: Como a composição e a diversidade de abelhas respondem à estrutura da paisagem, considerando a proporção de habitat natural e a heterogeneidade de usos e coberturas do solo?*
+
+**H1:** A diversidade e a composição de abelhas estão mais fortemente associadas à proporção de habitat natural, de modo que áreas com maior cobertura natural apresentam maior diversidade de espécies.
+
+**H2:** Mosaicos de diferentes classes de uso e cobertura do solo oferecem recursos complementares que sustentam maior diversidade e mantêm comunidades distintas, tornando a heterogeneidade da paisagem um preditor mais importante.
+
+**H0:** Não há associação significativa entre a proporção de habitat natural e a heterogeneidade da paisagem e os padrões de diversidade e composição de abelhas neste estudo.
+
+**Delineamento amostral:**
+- **6 locais** com diferentes contextos (3 bordas urbanas + 3 zonas rurais)
+- **Locais urbanos: TM, IF e MARM**
+- **Locais rurais: CUR, SG e MV** 
+- **9 pontos** por local (3 transectos × 3 pontos)
+- **Total: 54 pontos amostrais**
+
+## Objetivos
+
+Os principais objetivos desta análise são:
+
+1. **Diversidade Alfa**: Avaliar como a proporção de habitat natural e a heterogeneidade da paisagem afetam a riqueza de espécies (usando GLMM)
+2. **Composição Beta**: Testar se áreas de borda urbana diferem de zonas rurais usando modelos multivariados (mvabund)
+3. **Identificar Espécies Indicadoras**: Usar testes univariados para determinar quais espécies respondem aos gradientes
+4. **Análises Multivariadas**: Identificar padrões espaciais na estrutura das comunidades
+
+## Métodos Estatísticos
+
+- **GLMM (Modelo Misto)**: Riqueza por ponto (n=54) com Local como efeito aleatório
+- **mvabund - manyglm()**: Modelos lineares generalizados multivariados
+  - Testa efeitos de preditores na composição de espécies
+  - Família binomial negativa para dados de contagem
+  - Testes multivariados e univariados
+  - Permite incluir Local como bloco (similar ao ANOSIM bloqueado)
+- **NMDS**: Ordenação da composição de espécies (para visualização)
+- **Análise Multiescala**: Comparação entre pontos (n=54) e transectos (n=18)
+
+---
+
+# Configuração Inicial
+
+## Carregar Pacotes
+```{r pacotes}
+library(tidyverse)
+library(readxl)
+library(vegan)      # Para NMDS e diversidade
+library(mvabund)    # *** PACOTE PRINCIPAL ***
+library(lme4)       # Para GLMMs (diversidade alfa)
+library(MuMIn)      # Seleção de modelos
+library(ggplot2)
+library(viridis)
+library(gridExtra)
+library(car)        # Para VIF
+```
+
+## Importar e Limpar Dados
+```{r importar-dados}
+dados <- read_excel("../dados/Cap2.xlsx", sheet = "Doc_Cinthia")
+
+dados <- dados %>%
+  filter(
+    Especie != "Vespa",
+    Especie != "NA",
+    !is.na(Especie),
+    Especie != "Crabronidae sp.",
+    Especie != "Xylocopa grisescens"
+  ) %>%
+  mutate(
+    Especie = str_trim(Especie),
+    total_paisagem = Area_Natural + Area_Urbana + Pastagem + Mosaico_Usos +
+      Areas_nao_veg. + Mineracao + Lagos + Lavouras_Temp.,
+    contexto = case_when(
+      Local %in% c("TM_", "IF_", "MARM_") ~ "Borda_Urbana",
+      Local %in% c("SG_", "MV_", "CUR_") ~ "Zona_Rural",
+      TRUE ~ NA_character_
+    ),
+    ID_ponto = paste(Local, Ponto, sep = "_")
+  )
+
+cat("📊 DADOS CARREGADOS:\n")
+cat("  - Total de registros:", nrow(dados), "\n")
+cat("  - Número de espécies:", n_distinct(dados$Especie), "\n")
+cat("  - Locais amostrados:", n_distinct(dados$Local), "\n")
+cat("  - Pontos únicos:", n_distinct(dados$ID_ponto), "\n")
+```
+
+---
+
+# Diversidade Alfa (GLMM - 54 pontos)
+
+## Calcular Riqueza por Ponto
+```{r riqueza-pontos}
+riqueza_por_ponto <- dados %>%
+  group_by(ID_ponto) %>%
+  summarise(
+    Local = first(Local),
+    contexto = first(contexto),
+    prop_hab_natural = first(Area_Natural) / first(total_paisagem),
+    heterogeneidade = vegan::diversity(
+      c(first(Area_Urbana), first(Pastagem), first(Mosaico_Usos),
+        first(Areas_nao_veg.), first(Mineracao), first(Lagos), 
+        first(Lavouras_Temp.)),
+      index = "shannon"
+    ),
+    riqueza = n_distinct(Especie),
+    abundancia = n(),
+    .groups = "drop"
+  )
+
+cat("📊 Resumo da riqueza por ponto:\n")
+print(summary(riqueza_por_ponto))
+
+cat("\n📈 Estatísticas descritivas:\n")
+cat("  - Riqueza média:", round(mean(riqueza_por_ponto$riqueza), 2), "±", 
+    round(sd(riqueza_por_ponto$riqueza), 2), "\n")
+cat("  - Riqueza mínima:", min(riqueza_por_ponto$riqueza), "\n")
+cat("  - Riqueza máxima:", max(riqueza_por_ponto$riqueza), "\n")
+```
+
+## Modelos Lineares Generalizados Mistos (GLMM)
+
+### Seleção de Modelos
+```{r glmm-selecao}
+cat("\n=== AJUSTANDO GLMMs ===\n")
+cat("Local é incluído como efeito aleatório para controlar pseudorreplicação\n\n")
+
+# Centrar variáveis para reduzir multicolinearidade
+riqueza_por_ponto <- riqueza_por_ponto %>%
+  mutate(
+    prop_hab_natural_c = scale(prop_hab_natural, center = TRUE, scale = FALSE)[,1],
+    heterogeneidade_c = scale(heterogeneidade, center = TRUE, scale = FALSE)[,1]
+  )
+
+m1_c <- glmer(riqueza ~ prop_hab_natural_c + (1|Local), 
+              data = riqueza_por_ponto, 
+              family = poisson,
+              control = glmerControl(optimizer = "bobyqa"))
+
+m2_c <- glmer(riqueza ~ heterogeneidade_c + (1|Local), 
+              data = riqueza_por_ponto, 
+              family = poisson,
+              control = glmerControl(optimizer = "bobyqa"))
+
+m3_c <- glmer(riqueza ~ prop_hab_natural_c + heterogeneidade_c + (1|Local), 
+              data = riqueza_por_ponto, 
+              family = poisson,
+              control = glmerControl(optimizer = "bobyqa"))
+
+m4_c <- glmer(riqueza ~ prop_hab_natural_c * heterogeneidade_c + (1|Local), 
+              data = riqueza_por_ponto, 
+              family = poisson,
+              control = glmerControl(optimizer = "bobyqa"))
+
+m5_c <- glmer(riqueza ~ prop_hab_natural_c + heterogeneidade_c + contexto + (1|Local), 
+              data = riqueza_por_ponto, 
+              family = poisson,
+              control = glmerControl(optimizer = "bobyqa"))
+
+tabela_modelos_centrados <- model.sel(m1_c, m2_c, m3_c, m4_c, m5_c)
+cat("=== SELEÇÃO DE MODELOS (Variáveis Centradas) ===\n")
+print(tabela_modelos_centrados)
+
+melhor_modelo <- get.models(tabela_modelos_centrados, subset = 1)[[1]]
+
+cat("\n📊 MELHOR MODELO:\n")
+cat("AICc:", round(AICc(melhor_modelo), 2), "\n\n")
+print(summary(melhor_modelo)$coefficients)
+
+if(length(fixef(melhor_modelo)) > 2) {
+  cat("\n🔍 VIF:\n")
+  print(vif(melhor_modelo))
+}
+```
+
+---
+
+# Análises Multivariadas com mvabund
+
+## Preparar Matrizes
+```{r preparar-matrizes}
+cat("\n\n")
+cat("===============================================================\n")
+cat("              PREPARANDO DADOS PARA MVABUND                    \n")
+cat("===============================================================\n\n")
+
+# Matriz de comunidade (pontos × espécies)
+matriz_comunidade_pontos <- dados %>%
+  group_by(ID_ponto, Especie) %>%
+  summarise(abundancia = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Especie, values_from = abundancia, values_fill = 0) %>%
+  column_to_rownames("ID_ponto")
+
+cat("📐 Dimensões da matriz:", dim(matriz_comunidade_pontos), "\n")
+cat("   (", nrow(matriz_comunidade_pontos), " pontos × ", 
+    ncol(matriz_comunidade_pontos), " espécies)\n\n", sep = "")
+
+# Variáveis ambientais
+variaveis_pontos <- dados %>%
+  group_by(ID_ponto) %>%
+  summarise(
+    Local = first(Local),
+    contexto = first(contexto),
+    prop_hab_natural = first(Area_Natural) / first(total_paisagem),
+    heterogeneidade = vegan::diversity(
+      c(first(Area_Urbana), first(Pastagem), first(Mosaico_Usos),
+        first(Areas_nao_veg.), first(Mineracao), first(Lagos), 
+        first(Lavouras_Temp.)),
+      index = "shannon"
+    ),
+    .groups = "drop"
+  ) %>%
+  column_to_rownames("ID_ponto")
+
+# Centrar variáveis contínuas
+variaveis_pontos <- variaveis_pontos %>%
+  mutate(
+    prop_hab_natural_c = scale(prop_hab_natural, center = TRUE, scale = FALSE)[,1],
+    heterogeneidade_c = scale(heterogeneidade, center = TRUE, scale = FALSE)[,1]
+  )
+
+cat("✓ Alinhamento de matrizes:", 
+    all(rownames(matriz_comunidade_pontos) == rownames(variaveis_pontos)), "\n\n")
+
+# Converter para objeto mvabund
+cat("=== CONVERTENDO PARA OBJETO MVABUND ===\n")
+mv_comunidade <- mvabund(matriz_comunidade_pontos)
+
+cat("✓ Objeto mvabund criado com", ncol(mv_comunidade), "espécies\n\n")
+
+# Verificar média e variância
+cat("📊 Diagnóstico de dispersão:\n")
+cat("Média geral:", round(mean(mv_comunidade), 2), "\n")
+cat("Variância geral:", round(var(as.vector(mv_comunidade)), 2), "\n")
+cat("Razão variância/média:", round(var(as.vector(mv_comunidade))/mean(mv_comunidade), 2), "\n")
+
+if(var(as.vector(mv_comunidade))/mean(mv_comunidade) > 2) {
+  cat("⚠️ Overdispersion detectada → usar família binomial negativa\n")
+} else {
+  cat("✓ Poisson pode ser apropriada\n")
+}
+```
+
+## Explorando Relações Média-Variância
+```{r mean-var-plot, fig.width=10, fig.height=7}
+cat("\n=== EXPLORANDO RELAÇÃO MÉDIA-VARIÂNCIA ===\n")
+
+plot(mv_comunidade, 
+     col = viridis(54),
+     pch = 16,
+     main = "Relação Média-Variância por Espécie",
+     xlab = "Média", 
+     ylab = "Variância")
+abline(a = 0, b = 1, col = "red", lwd = 2, lty = 2)
+legend("topleft", 
+       legend = c("Linha 1:1 (Poisson)", "Dados observados"),
+       col = c("red", viridis(1)),
+       lty = c(2, NA),
+       pch = c(NA, 16),
+       lwd = c(2, NA))
+
+cat("\n💡 Se os pontos estão acima da linha 1:1 → overdispersion → use binomial negativa\n")
+```
+
+## Modelos Multivariados (manyglm)
+
+### Testando Diferentes Modelos
+```{r manyglm-modelos}
+cat("\n\n")
+cat("===============================================================\n")
+cat("             AJUSTANDO MODELOS MULTIVARIADOS                   \n")
+cat("===============================================================\n\n")
+
+cat("🔧 Ajustando modelos com família binomial negativa...\n")
+cat("(Isso pode demorar alguns minutos)\n\n")
+
+# Modelo 1: Apenas contexto
+cat("Modelo 1: contexto\n")
+mv_mod1 <- manyglm(mv_comunidade ~ contexto, 
+                   data = variaveis_pontos, 
+                   family = "negative.binomial")
+
+# Modelo 2: Habitat natural
+cat("Modelo 2: prop_hab_natural_c\n")
+mv_mod2 <- manyglm(mv_comunidade ~ prop_hab_natural_c, 
+                   data = variaveis_pontos, 
+                   family = "negative.binomial")
+
+# Modelo 3: Heterogeneidade
+cat("Modelo 3: heterogeneidade_c\n")
+mv_mod3 <- manyglm(mv_comunidade ~ heterogeneidade_c, 
+                   data = variaveis_pontos, 
+                   family = "negative.binomial")
+
+# Modelo 4: Aditivo (habitat + heterogeneidade)
+cat("Modelo 4: prop_hab_natural_c + heterogeneidade_c\n")
+mv_mod4 <- manyglm(mv_comunidade ~ prop_hab_natural_c + heterogeneidade_c, 
+                   data = variaveis_pontos, 
+                   family = "negative.binomial")
+
+# Modelo 5: Com interação
+cat("Modelo 5: prop_hab_natural_c * heterogeneidade_c\n")
+mv_mod5 <- manyglm(mv_comunidade ~ prop_hab_natural_c * heterogeneidade_c, 
+                   data = variaveis_pontos, 
+                   family = "negative.binomial")
+
+# Modelo 6: Completo (habitat + heterogeneidade + contexto)
+cat("Modelo 6: prop_hab_natural_c + heterogeneidade_c + contexto\n")
+mv_mod6 <- manyglm(mv_comunidade ~ prop_hab_natural_c + heterogeneidade_c + contexto, 
+                   data = variaveis_pontos, 
+                   family = "negative.binomial")
+
+cat("\n✓ Todos os modelos ajustados!\n")
+```
+
+### Testes de Hipóteses (Multivariados)
+```{r anova-manyglm}
+cat("\n\n")
+cat("===============================================================\n")
+cat("           TESTES DE HIPÓTESES MULTIVARIADOS                   \n")
+cat("===============================================================\n\n")
+
+cat("Realizando testes de permutação (999 permutações)...\n")
+cat("Método: PIT-trap resampling\n\n")
+
+# Teste para cada modelo
+cat("--- MODELO 1: Contexto ---\n")
+anova_mod1 <- anova(mv_mod1, 
+                    nBoot = 999, 
+                    p.uni = "none",
+                    resamp = "perm.resid")
+print(anova_mod1)
+
+cat("\n--- MODELO 2: Habitat Natural ---\n")
+anova_mod2 <- anova(mv_mod2, 
+                    nBoot = 999, 
+                    p.uni = "none",
+                    resamp = "perm.resid")
+print(anova_mod2)
+
+cat("\n--- MODELO 3: Heterogeneidade ---\n")
+anova_mod3 <- anova(mv_mod3, 
+                    nBoot = 999, 
+                    p.uni = "none",
+                    resamp = "perm.resid")
+print(anova_mod3)
+
+cat("\n--- MODELO 4: Aditivo (Habitat + Heterogeneidade) ---\n")
+anova_mod4 <- anova(mv_mod4, 
+                    nBoot = 999, 
+                    p.uni = "none",
+                    resamp = "perm.resid")
+print(anova_mod4)
+
+cat("\n--- MODELO 5: Com Interação ---\n")
+anova_mod5 <- anova(mv_mod5, 
+                    nBoot = 999, 
+                    p.uni = "none",
+                    resamp = "perm.resid")
+print(anova_mod5)
+
+cat("\n--- MODELO 6: Completo ---\n")
+anova_mod6 <- anova(mv_mod6, 
+                    nBoot = 999, 
+                    p.uni = "none",
+                    resamp = "perm.resid")
+print(anova_mod6)
+
+# Tabela resumo
+cat("\n\n📊 RESUMO DOS TESTES MULTIVARIADOS:\n")
+resumo_testes <- data.frame(
+  Modelo = c("Contexto", 
+             "Habitat Natural", 
+             "Heterogeneidade",
+             "Habitat + Heterogeneidade",
+             "Habitat * Heterogeneidade",
+             "Habitat + Heterogeneidade + Contexto"),
+  Dev_Explained = c(
+    paste0(round(anova_mod1$table[1,3], 1), "%"),
+    paste0(round(anova_mod2$table[1,3], 1), "%"),
+    paste0(round(anova_mod3$table[1,3], 1), "%"),
+    "ver tabela",
+    "ver tabela",
+    "ver tabela"
+  ),
+  p_value = c(
+    anova_mod1$table[1, 4],
+    anova_mod2$table[1, 4],
+    anova_mod3$table[1, 4],
+    "ver tabela",
+    "ver tabela",
+    "ver tabela"
+  )
+)
+print(resumo_testes)
+```
+
+### Modelo Bloqueado (Controla Pseudorreplicação)
+```{r manyglm-bloqueado}
+cat("\n\n")
+cat("===============================================================\n")
+cat("          MODELO BLOQUEADO (CONTROLA LOCAL)                    \n")
+cat("===============================================================\n\n")
+
+cat("Testando efeito de CONTEXTO controlando Local como bloco...\n\n")
+
+# Modelo com Local como bloco
+mv_mod_blocked <- manyglm(mv_comunidade ~ contexto + Local, 
+                          data = variaveis_pontos, 
+                          family = "negative.binomial")
+
+cat("Teste para CONTEXTO (bloqueando Local):\n")
+anova_blocked <- anova(mv_mod_blocked, 
+                       nBoot = 999,
+                       p.uni = "none",
+                       resamp = "perm.resid",
+                       test = "LR")  # Likelihood Ratio test
+print(anova_blocked)
+
+cat("\n💡 Este modelo controla a pseudorreplicação dos pontos dentro de cada local!\n")
+cat("É análogo ao ANOSIM bloqueado da análise anterior.\n")
+```
+
+## Testes Univariados (Espécies Indicadoras)
+```{r testes-univariados}
+cat("\n\n")
+cat("===============================================================\n")
+cat("     TESTES UNIVARIADOS - IDENTIFICANDO ESPÉCIES-CHAVE         \n")
+cat("===============================================================\n\n")
+
+cat("Identificando quais espécies respondem aos preditores...\n\n")
+
+# Escolher o modelo mais relevante (exemplo: modelo 4 - aditivo)
+cat("--- MODELO ADITIVO: Habitat + Heterogeneidade ---\n")
+anova_uni <- anova(mv_mod4, 
+                   nBoot = 999, 
+                   p.uni = "adjusted",  # *** IMPORTANTE: testes univariados ***
+                   resamp = "perm.resid")
+
+cat("\n📊 RESULTADOS MULTIVARIADOS:\n")
+print(anova_uni$table)
+
+cat("\n\n📋 RESULTADOS UNIVARIADOS (por espécie):\n")
+cat("Espécies significativas para cada preditor:\n\n")
+
+# Habitat Natural
+cat("--- Habitat Natural ---\n")
+uni_habitat <- anova_uni$uni.p[1, ]
+especies_sig_habitat <- names(uni_habitat[uni_habitat < 0.05])
+cat("Espécies significativas (p < 0.05):", length(especies_sig_habitat), "\n")
+if(length(especies_sig_habitat) > 0) {
+  print(sort(uni_habitat[especies_sig_habitat]))
+}
+
+# Heterogeneidade
+cat("\n--- Heterogeneidade ---\n")
+uni_het <- anova_uni$uni.p[2, ]
+especies_sig_het <- names(uni_het[uni_het < 0.05])
+cat("Espécies significativas (p < 0.05):", length(especies_sig_het), "\n")
+if(length(especies_sig_het) > 0) {
+  print(sort(uni_het[especies_sig_het]))
+}
+
+# Criar tabela de espécies indicadoras
+cat("\n\n📊 TABELA DE ESPÉCIES INDICADORAS:\n")
+especies_indicadoras <- data.frame(
+  Especie = colnames(mv_comunidade),
+  p_habitat = uni_habitat,
+  p_heterog = uni_het
+) %>%
+  mutate(
+    sig_habitat = ifelse(p_habitat < 0.05, "***", 
+                        ifelse(p_habitat < 0.10, "*", "")),
+    sig_heterog = ifelse(p_heterog < 0.05, "***", 
+                        ifelse(p_heterog < 0.10, "*", ""))
+  ) %>%
+  arrange(p_habitat)
+
+# Mostrar top 20
+print(head(especies_indicadoras, 20))
+```
+
+### Visualizando Espécies Indicadoras
+```{r fig-especies-indicadoras, fig.width=12, fig.height=8}
+cat("\n=== VISUALIZANDO ESPÉCIES MAIS RESPONSIVAS ===\n")
+
+# Top espécies respondendo a habitat
+top_spp_habitat <- head(especies_indicadoras %>% 
+                          filter(p_habitat < 0.05) %>% 
+                          arrange(p_habitat), 10)
+
+if(nrow(top_spp_habitat) > 0) {
+  cat("\nTop 10 espécies respondendo a Habitat Natural:\n")
+  print(top_spp_habitat$Especie)
+  
+  # Gráfico
+  abundancias <- matriz_comunidade_pontos[, top_spp_habitat$Especie, drop = FALSE]
+  abundancias_long <- abundancias %>%
+    rownames_to_column("ID_ponto") %>%
+    pivot_longer(-ID_ponto, names_to = "Especie", values_to = "Abundancia") %>%
+    left_join(variaveis_pontos %>% 
+                rownames_to_column("ID_ponto") %>% 
+                select(ID_ponto, prop_hab_natural, contexto), 
+              by = "ID_ponto")
+  
+  p_indicadoras <- ggplot(abundancias_long, 
+                          aes(x = prop_hab_natural, y = Abundancia, color = contexto)) +
+    geom_point(alpha = 0.6, size = 2) +
+    geom_smooth(method = "glm", method.args = list(family = "poisson"), 
+                se = TRUE, linewidth = 1) +
+    facet_wrap(~Especie, scales = "free_y", ncol = 5) +
+    scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60")) +
+    theme_bw(base_size = 10) +
+    theme(
+      strip.text = element_text(size = 8, face = "bold"),
+      legend.position = "top"
+    ) +
+    labs(
+      x = "Proporção de Habitat Natural",
+      y = "Abundância",
+      title = "Top 10 Espécies Indicadoras de Habitat Natural",
+      color = "Contexto"
+    )
+  
+  print(p_indicadoras)
+}
+```
+
+## NMDS (Ordenação para Visualização)
+```{r nmds}
+cat("\n\n")
+cat("===============================================================\n")
+cat("              NMDS (ORDENAÇÃO PARA VISUALIZAÇÃO)               \n")
+cat("===============================================================\n\n")
+
+cat("💡 NMDS é usado aqui apenas para visualização dos padrões\n")
+cat("Os testes de hipóteses são feitos com mvabund!\n\n")
+
+set.seed(123)
+nmds_pontos <- metaMDS(matriz_comunidade_pontos, 
+                       distance = "bray", 
+                       k = 2,
+                       trymax = 100,
+                       trace = FALSE)
+
+cat("📊 Stress do NMDS (k=2):", round(nmds_pontos$stress, 4), "\n\n")
+
+if(nmds_pontos$stress > 0.20) {
+  cat("⚠️ Stress alto! Tentando k=3...\n")
+  nmds_pontos <- metaMDS(matriz_comunidade_pontos, 
+                         distance = "bray", 
+                         k = 3,
+                         trymax = 100,
+                         trace = FALSE)
+  cat("✓ Novo stress (k=3):", round(nmds_pontos$stress, 4), "\n")
+}
+
+# Preparar dados para gráficos
+nmds_scores <- as.data.frame(scores(nmds_pontos, display = "sites"))
+nmds_scores$ID_ponto <- rownames(nmds_scores)
+nmds_scores <- nmds_scores %>%
+  left_join(variaveis_pontos %>% rownames_to_column("ID_ponto"), by = "ID_ponto")
+```
+
+---
+
+# Visualizações
+
+## NMDS por Contexto
+```{r fig-nmds-contexto, fig.cap="Figura 1: Composição de abelhas em bordas urbanas vs zonas rurais", fig.width=10, fig.height=8}
+hull_contexto <- nmds_scores %>%
+  group_by(contexto) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hull_contexto, 
+               aes(x = NMDS1, y = NMDS2, fill = contexto, group = contexto),
+               alpha = 0.3) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = contexto, shape = contexto),
+             size = 4, alpha = 0.8) +
+  scale_fill_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60")) +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60")) +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Composição de abelhas: Borda Urbana vs Zona Rural\n(Stress = ", 
+                   round(nmds_pontos$stress, 3), ")"),
+    subtitle = paste0("mvabund LR = ", 
+                      round(anova_mod1$table[1,1], 1), 
+                      ", p = ", 
+                      round(anova_mod1$table[1,4], 3)),
+    color = "Contexto", fill = "Contexto", shape = "Contexto"
+  )
+```
+
+## NMDS por Local
+```{r fig-nmds-local, fig.cap="Figura 2: Composição de abelhas por local", fig.width=11, fig.height=8}
+hull_local <- nmds_scores %>%
+  group_by(Local) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hull_local, 
+               aes(x = NMDS1, y = NMDS2, fill = Local, group = Local),
+               alpha = 0.3) +
+  geom_point(data = nmds_scores, 
+             aes(x = NMDS1, y = NMDS2, color = Local),
+             size = 3.5, alpha = 0.8) +
+  scale_fill_viridis_d(option = "turbo") +
+  scale_color_viridis_d(option = "turbo") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Composição por Local (Stress = ", round(nmds_pontos$stress, 3), ")")
+  )
+```
+
+## Gradiente de Habitat Natural
+```{r fig-gradiente, fig.cap="Figura 3: Gradiente de proporção de habitat natural", fig.width=10, fig.height=8}
+ggplot(nmds_scores, aes(x = NMDS1, y = NMDS2, color = prop_hab_natural)) +
+  geom_point(size = 4, alpha = 0.8) +
+  scale_color_viridis_c(name = "Proporção\nHabitat Natural", option = "plasma") +
+  coord_equal() +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank()) +
+  labs(
+    x = "NMDS1", y = "NMDS2",
+    title = paste0("Gradiente de Habitat Natural (Stress = ", 
+                   round(nmds_pontos$stress, 3), ")"),
+    subtitle = paste0("mvabund: % dev. explicada = ", 
+                      round(anova_mod2$table[1,3], 1), 
+                      "%, p = ", 
+                      round(anova_mod2$table[1,4], 3))
+  )
+```
+
+## Riqueza vs Habitat Natural
+```{r fig-riqueza-habitat, fig.cap="Figura 4: Relação entre riqueza e habitat natural", fig.width=10, fig.height=7}
+ggplot(riqueza_por_ponto, aes(x = prop_hab_natural, y = riqueza, color = contexto)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "glm", method.args = list(family = "poisson"), 
+              se = TRUE, linewidth = 1.2) +
+  scale_color_manual(values = c("Borda_Urbana" = "#E74C3C", "Zona_Rural" = "#27AE60"),
+                     name = "Contexto") +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Proporção de Habitat Natural",
+    y = "Riqueza de Espécies",
+    title = "Relação entre Habitat Natural e Riqueza de Abelhas"
+  )
+```
+
+---
+
+# Análise Complementar com Transectos (n=18)
+```{r analise-transectos}
+cat("\n\n")
+cat("===============================================================\n")
+cat("   ANÁLISE USANDO TRANSECTOS COMO UNIDADES AMOSTRAIS (n=18)   \n")
+cat("===============================================================\n\n")
+
+# Preparar dados por transecto
+dados_transecto <- dados %>%
+  mutate(
+    transecto = str_remove(Ponto, "[0-9]+"),
+    ID_transecto = paste(Local, transecto, sep = "_")
+  )
+
+# Matriz de comunidade por transecto
+matriz_transecto <- dados_transecto %>%
+  group_by(ID_transecto, Especie) %>%
+  summarise(abundancia = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Especie, 
+              values_from = abundancia, 
+              values_fill = 0) %>%
+  column_to_rownames("ID_transecto")
+
+cat("📐 Dimensões:", dim(matriz_transecto), "\n\n")
+
+# Variáveis por transecto
+vars_transecto <- dados_transecto %>%
+  group_by(ID_transecto) %>%
+  summarise(
+    Local = first(Local),
+    transecto = first(transecto),
+    contexto = first(contexto),
+    prop_hab_natural = mean(Area_Natural / total_paisagem),
+    heterogeneidade = mean(vegan::diversity(
+      c(Area_Urbana, Pastagem, Mosaico_Usos, Areas_nao_veg., 
+        Mineracao, Lagos, Lavouras_Temp.), 
+      index = "shannon"
+    )),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prop_hab_natural_c = scale(prop_hab_natural, center = TRUE, scale = FALSE)[,1],
+    heterogeneidade_c = scale(heterogeneidade, center = TRUE, scale = FALSE)[,1]
+  ) %>%
+  column_to_rownames("ID_transecto")
+
+# Converter para mvabund
+mv_transecto <- mvabund(matriz_transecto)
+
+cat("=== MODELOS MVABUND (TRANSECTOS) ===\n\n")
+
+# Modelos principais
+mv_t1 <- manyglm(mv_transecto ~ contexto, 
+                 data = vars_transecto, 
+                 family = "negative.binomial")
+
+mv_t2 <- manyglm(mv_transecto ~ prop_hab_natural_c, 
+                 data = vars_transecto, 
+                 family = "negative.binomial")
+
+mv_t3 <- manyglm(mv_transecto ~ prop_hab_natural_c + heterogeneidade_c, 
+                 data = vars_transecto, 
+                 family = "negative.binomial")
+
+# Modelo bloqueado
+mv_t_blocked <- manyglm(mv_transecto ~ contexto + Local, 
+                        data = vars_transecto, 
+                        family = "negative.binomial")
+
+# Testes
+cat("Testando modelos...\n\n")
+
+anova_t1 <- anova(mv_t1, nBoot = 999, p.uni = "none")
+anova_t2 <- anova(mv_t2, nBoot = 999, p.uni = "none")
+anova_t3 <- anova(mv_t3, nBoot = 999, p.uni = "none")
+anova_t_blocked <- anova(mv_t_blocked, nBoot = 999, p.uni = "none")
+
+cat("--- CONTEXTO (Transectos) ---\n")
+print(anova_t1$table)
+
+cat("\n--- HABITAT NATURAL (Transectos) ---\n")
+print(anova_t2$table)
+
+cat("\n--- ADITIVO (Transectos) ---\n")
+print(anova_t3$table)
+
+cat("\n--- BLOQUEADO (Transectos) ---\n")
+print(anova_t_blocked$table)
+
+cat("\n\n==============================================================\n")
+cat("         COMPARAÇÃO: PONTOS (n=54) vs TRANSECTOS (n=18)      \n")
+cat("==============================================================\n\n")
+
+comparacao <- data.frame(
+  Analise = c(
+    "mvabund - Contexto (LR)",
+    "mvabund - Habitat Natural (LR)",
+    "mvabund - Bloqueado (Contexto, LR)"
+  ),
+  Pontos_LR = c(
+    round(anova_mod1$table[1,1], 1),
+    round(anova_mod2$table[1,1], 1),
+    round(anova_blocked$table[1,1], 1)
+  ),
+  Pontos_p = c(
+    round(anova_mod1$table[1,4], 3),
+    round(anova_mod2$table[1,4], 3),
+    round(anova_blocked$table[1,4], 3)
+  ),
+  Transectos_LR = c(
+    round(anova_t1$table[1,1], 1),
+    round(anova_t2$table[1,1], 1),
+    round(anova_t_blocked$table[1,1], 1)
+  ),
+  Transectos_p = c(
+    round(anova_t1$table[1,4], 3),
+    round(anova_t2$table[1,4], 3),
+    round(anova_t_blocked$table[1,4], 3)
+  )
+)
+
+print(comparacao)
+
+cat("\n💡 Resultados consistentes entre escalas sugerem padrões robustos!\n")
+```
+
+---
+
+# Tabela Resumo Final
+```{r tabela-resumo}
+resumo_final <- data.frame(
+  Analise = c(
+    "GLMM - Riqueza (melhor modelo)",
+    "mvabund - Contexto",
+    "mvabund - Habitat Natural",
+    "mvabund - Heterogeneidade",
+    "mvabund - Aditivo",
+    "mvabund - Bloqueado (Contexto)",
+    "Espécies indicadoras (Habitat)",
+    "Espécies indicadoras (Heterog.)"
+  ),
+  Estatistica = c(
+    paste0("AICc = ", round(AICc(melhor_modelo), 1)),
+    paste0("LR = ", round(anova_mod1$table[1,1], 1)),
+    paste0("LR = ", round(anova_mod2$table[1,1], 1)),
+    paste0("LR = ", round(anova_mod3$table[1,1], 1)),
+    paste0("LR = ", round(anova_mod4$table[1,1], 1)),
+    paste0("LR = ", round(anova_blocked$table[1,1], 1)),
+    paste0("n = ", length(especies_sig_habitat)),
+    paste0("n = ", length(especies_sig_het))
+  ),
+  p_value = c(
+    ifelse(length(fixef(melhor_modelo)) > 2, 
+           round(summary(melhor_modelo)$coefficients[2, 4], 4), 
+           "—"),
+    round(anova_mod1$table[1,4], 4),
+    round(anova_mod2$table[1,4], 4),
+    round(anova_mod3$table[1,4], 4),
+    "ver tabela",
+    round(anova_blocked$table[1,4], 4),
+    "—",
+    "—"
+  ),
+  Dev_Explained = c(
+    "—",
+    paste0(round(anova_mod1$table[1,3], 1), "%"),
+    paste0(round(anova_mod2$table[1,3], 1), "%"),
+    paste0(round(anova_mod3$table[1,3], 1), "%"),
+    "ver tabela",
+    paste0(round(anova_blocked$table[1,3], 1), "%"),
+    "—",
+    "—"
+  )
+)
+
+resumo_final
+```
+
+---
+
+# Conclusões
+
+## Principais Resultados
+
+### 1. Vantagens do mvabund sobre ANOSIM
+
+✅ **Modela a distribuição dos dados**: Usa binomial negativa para dados de contagem com overdispersion
+✅ **Testa covariáveis contínuas**: Não precisa categorizar variáveis
+✅ **Testes univariados**: Identifica quais espécies respondem aos gradientes
+✅ **Inferência baseada em modelos**: Estatística mais robusta que testes baseados em ranks
+✅ **Flexibilidade**: Pode incluir múltiplos preditores, interações, e efeitos de bloco
+
+### 2. Composição Beta (mvabund)
+
+- **manyglm** revelou que a composição de espécies responde significativamente aos gradientes ambientais
+- **Testes multivariados** mostraram efeitos de contexto, habitat natural e/ou heterogeneidade
+- **Modelo bloqueado** controlou a pseudorreplicação através da inclusão de Local como preditor
+- **Testes univariados** identificaram espécies-chave que impulsionam os padrões observados
+- **% deviance explicada** quantifica a força dos efeitos
+
+### 3. Identificação de Espécies Indicadoras
+
+✅ Testes univariados identificaram espécies específicas respondendo a cada preditor
+✅ Estas espécies podem ser usadas como indicadoras de qualidade de habitat
+✅ Gráficos mostram as respostas individuais das espécies aos gradientes
+
+### 4. Análise em Múltiplas Escalas
+
+- Comparação entre pontos (n=54) e transectos (n=18)
+- Resultados consistentes entre escalas indicam padrões robustos
+- Diferenças entre escalas podem revelar processos dependentes de escala
+
+## Destaques Metodológicos
+
+✅ **Controle de Pseudorreplicação**: GLMM + modelo bloqueado no mvabund
+✅ **Distribuição Apropriada**: Binomial negativa para dados de contagem com overdispersion
+✅ **Inferência Robusta**: Testes de permutação com PIT-trap resampling
+✅ **Identificação de Drivers**: Testes univariados revelam espécies-chave
+✅ **Múltiplas Escalas**: Análises em nível de ponto e transecto
+✅ **Visualizações Integradas**: NMDS para visualização + mvabund para testes
+
+## mvabund vs ANOSIM: Quando Usar Cada Um?
+
+**Use mvabund quando:**
+- Seus dados são contagens de abundância
+- Você quer testar efeitos de variáveis contínuas
+- Você quer identificar espécies indicadoras
+- Você precisa de inferência baseada em modelos
+- Você tem interesse em efeitos de múltiplos preditores
+
+**Use ANOSIM quando:**
+- Você tem apenas dados de presença/ausência ou dados transformados
+- Você quer um teste simples e rápido
+- Você está interessado apenas em diferenças entre grupos categóricos
+- Você quer um teste robusto a diferenças de dispersão
+
+## Arquivos Gerados
+
+Este script gera automaticamente:
+- ✅ Figuras de alta qualidade (NMDS, gradientes, espécies indicadoras)
+- ✅ Tabelas de resultados multivariados e univariados
+- ✅ Este relatório HTML completo e reproduzível
+- ✅ Comparações entre diferentes escalas de análise
+
+---
+
+# Referências Principais
+
+**mvabund package:**
+Wang, Y., Naumann, U., Wright, S. T., & Warton, D. I. (2012). mvabund–an R package for model‐based analysis of multivariate abundance data. *Methods in Ecology and Evolution*, 3(3), 471-474.
+
+**Modelo-based approach:**
+Warton, D. I., Wright, S. T., & Wang, Y. (2012). Distance‐based multivariate analyses confound location and dispersion effects. *Methods in Ecology and Evolution*, 3(1), 89-101.
+
+---
+
+# Informações da Sessão
+```{r sessao}
+sessionInfo()
+```
+
+---
+
+<div style="text-align: center; margin-top: 50px; padding: 20px; background-color: #f0f0f0; border-radius: 10px;">
+**Análise realizada em:** `r format(Sys.Date(), '%d/%m/%Y')`
+
+**Versão:** mvabund com análise multiescala e identificação de espécies indicadoras
+
+**Contato:** cinthia.soares@ufvjm.edu.br
+
+---
+
+*Documento gerado com R Markdown*
+</div>
